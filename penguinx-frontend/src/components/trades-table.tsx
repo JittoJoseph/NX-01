@@ -1,17 +1,20 @@
 "use client";
 
-import type { SimulatedTrade } from "@/lib/types";
+import type { SimulatedTrade, LiveMarketPrice } from "@/lib/types";
 import { MARKET_WINDOW_LABELS, type MarketWindow } from "@/lib/types";
 
 interface TradesTableProps {
   trades: SimulatedTrade[];
   loading: boolean;
+  /** Real-time bid/ask/mid prices keyed by tokenId, refreshed every ~2s from WS */
+  livePrices?: Record<string, LiveMarketPrice>;
   onTradeClick?: (trade: SimulatedTrade) => void;
 }
 
 export function TradesTable({
   trades,
   loading,
+  livePrices = {},
   onTradeClick,
 }: TradesTableProps) {
   if (loading) {
@@ -77,8 +80,10 @@ export function TradesTable({
             const entryPrice = parseFloat(trade.entryPrice);
             const entryCents = Math.round(entryPrice * 100);
             const shares = parseFloat(trade.entryShares || "0");
+            const fees = parseFloat(trade.entryFees || "0");
             const isUp = trade.outcomeLabel === "Up";
             const isClosed = trade.status === "CLOSED";
+            const isOpen = trade.status === "OPEN";
 
             // Exit price for closed trades
             const exitPrice = trade.exitPrice
@@ -87,7 +92,20 @@ export function TradesTable({
             const exitCents =
               exitPrice !== null ? Math.round(exitPrice * 100) : null;
 
-            // P&L
+            // Live price for open trades
+            const livePrice =
+              isOpen && trade.tokenId
+                ? (livePrices[trade.tokenId] ?? null)
+                : null;
+            const liveMid = livePrice?.mid ?? null;
+            const liveCents =
+              liveMid !== null ? Math.round(liveMid * 100) : null;
+
+            // Unrealized P&L for open trades: (currentMid - entryPrice) * shares - fees
+            const unrealizedPnl =
+              liveMid !== null ? (liveMid - entryPrice) * shares - fees : null;
+
+            // Realized P&L for closed trades
             const realizedPnl = parseFloat(trade.realizedPnl || "0");
             const hasPnl = isClosed && !!trade.realizedPnl;
             const pnlPositive = realizedPnl >= 0;
@@ -153,6 +171,21 @@ export function TradesTable({
                     >
                       {exitCents}¢
                     </span>
+                  ) : liveCents !== null ? (
+                    <div className="flex flex-col items-end gap-0.5">
+                      <span
+                        className={`tabular-nums font-medium ${
+                          liveCents >= entryCents
+                            ? "text-emerald-400"
+                            : "text-red-400"
+                        }`}
+                      >
+                        {liveCents}¢
+                      </span>
+                      <span className="text-[9px] text-blue-400 font-mono">
+                        ● LIVE
+                      </span>
+                    </div>
                   ) : (
                     <span className="text-muted-foreground/40">—</span>
                   )}
@@ -179,6 +212,22 @@ export function TradesTable({
                       >
                         {pnlPositive ? "+" : ""}$
                         {Math.abs(realizedPnl).toFixed(2)}
+                      </span>
+                    </div>
+                  ) : unrealizedPnl !== null ? (
+                    <div className="flex flex-col items-end gap-0.5">
+                      <span
+                        className={`tabular-nums font-semibold ${
+                          unrealizedPnl >= 0
+                            ? "text-emerald-400"
+                            : "text-red-400"
+                        }`}
+                      >
+                        {unrealizedPnl >= 0 ? "+" : ""}$
+                        {Math.abs(unrealizedPnl).toFixed(2)}
+                      </span>
+                      <span className="text-[9px] text-muted-foreground/50 font-mono">
+                        unrealized
                       </span>
                     </div>
                   ) : (

@@ -44,6 +44,7 @@ interface ActiveMarketState {
   yesTokenId: string;
   noTokenId: string;
   question: string;
+  slug: string | null;
   endDate: Date;
   targetPrice: number | null;
   outcomes: string[];
@@ -168,6 +169,21 @@ export class MarketOrchestrator extends EventEmitter {
     };
   }
 
+  getLiveMarkets() {
+    return Array.from(this.activeMarkets.values())
+      .filter((m) => !m.resolved)
+      .sort((a, b) => a.endDate.getTime() - b.endDate.getTime())
+      .map((m) => ({
+        marketId: m.marketId,
+        question: m.question,
+        slug: m.slug,
+        endDate: m.endDate.toISOString(),
+        yesTokenId: m.yesTokenId,
+        noTokenId: m.noTokenId,
+        prices: { ...m.lastPrices },
+      }));
+  }
+
   private wireEvents(): void {
     // Scanner → new market discovered
     this.scanner.on("newMarket", async ({ market, event }) => {
@@ -231,6 +247,7 @@ export class MarketOrchestrator extends EventEmitter {
       yesTokenId: tokenIds[0]!,
       noTokenId: tokenIds[1]!,
       question: market.question ?? "",
+      slug: market.slug ?? null,
       endDate,
       targetPrice,
       outcomes,
@@ -303,6 +320,15 @@ export class MarketOrchestrator extends EventEmitter {
   private onBestBidAskUpdate(ev: BestBidAskEvent): void {
     const bestBid = parseFloat(ev.bestBid);
     const bestAsk = parseFloat(ev.bestAsk);
+    const mid = (bestBid + bestAsk) / 2;
+
+    // Update local price state so getLiveMarkets() always has fresh prices
+    for (const state of this.activeMarkets.values()) {
+      if (state.yesTokenId === ev.tokenId || state.noTokenId === ev.tokenId) {
+        state.lastPrices[ev.tokenId] = { bid: bestBid, ask: bestAsk, mid };
+        break;
+      }
+    }
 
     // Also feed to strategy engine
     this.strategyEngine.evaluatePrice(
@@ -313,7 +339,7 @@ export class MarketOrchestrator extends EventEmitter {
     );
 
     // Check stop-loss on open positions
-    this.checkStopLoss(ev.tokenId, (bestBid + bestAsk) / 2);
+    this.checkStopLoss(ev.tokenId, mid);
   }
 
   /**
@@ -478,6 +504,7 @@ export class MarketOrchestrator extends EventEmitter {
       this.cycleCount++;
       this.emit("tradeOpened", {
         tradeId,
+        trade: tradeRow,
         ...opp,
         execution,
         expectedProfit,
@@ -601,7 +628,7 @@ export class MarketOrchestrator extends EventEmitter {
         ? calculateWinProfit(pos.entryPrice, pos.entryShares, pos.fees)
         : calculateLossAmount(pos.entryPrice, pos.entryShares, pos.fees);
 
-      await resolveTrade(
+      const resolvedTrade = await resolveTrade(
         tradeId,
         isWin ? "WIN" : "LOSS",
         pnl.toFixed(6),
@@ -633,7 +660,13 @@ export class MarketOrchestrator extends EventEmitter {
         isWin ? "✅ Trade WON" : "❌ Trade LOST",
       );
 
-      this.emit("tradeResolved", { tradeId, isWin, pnl, exitPrice });
+      this.emit("tradeResolved", {
+        tradeId,
+        isWin,
+        pnl,
+        exitPrice,
+        trade: resolvedTrade,
+      });
     }
 
     // Update strategy engine position count
@@ -671,7 +704,7 @@ export class MarketOrchestrator extends EventEmitter {
           pos.fees,
         );
 
-        await resolveTrade(
+        const resolvedTrade = await resolveTrade(
           tradeId,
           "STOP_LOSS",
           pnl.toFixed(6),
@@ -701,6 +734,7 @@ export class MarketOrchestrator extends EventEmitter {
           tradeId,
           pnl,
           exitPrice: currentMidpoint,
+          trade: resolvedTrade,
         });
       }
     }

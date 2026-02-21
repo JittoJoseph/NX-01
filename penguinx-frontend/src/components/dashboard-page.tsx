@@ -13,11 +13,15 @@ import {
   useActiveMarkets,
   useWsConnection,
   useWsEvent,
+  useLiveMarkets,
+  useCountdown,
 } from "@/lib/hooks";
 import type {
   SimulatedTrade,
   DiscoveredMarket,
   SystemStats,
+  LiveMarketInfo,
+  LiveMarketPrice,
 } from "@/lib/types";
 import { MARKET_WINDOW_LABELS, type MarketWindow } from "@/lib/types";
 
@@ -36,18 +40,17 @@ export function DashboardPage() {
     setMounted(true);
   }, []);
 
-  // Data hooks
-  const {
-    trades,
-    loading: tradesLoading,
-    refetch: refetchTrades,
-  } = useTrades(undefined, 100);
+  // Data hooks — trades are now fully WS-driven (no polling)
+  const { trades, loading: tradesLoading } = useTrades(undefined, 100);
   const { stats, loading: statsLoading } = useSystemStats();
   const {
     markets,
     loading: marketsLoading,
     refetch: refetchMarkets,
   } = useActiveMarkets();
+
+  // Real-time market prices from WS systemState broadcast
+  const liveMarkets = useLiveMarkets();
 
   // WebSocket live events
   useWsConnection();
@@ -63,37 +66,25 @@ export function DashboardPage() {
     }, []),
   );
 
-  // Refetch trades on trade events
-  useWsEvent(
-    "tradeOpened",
-    useCallback(() => {
-      refetchTrades();
-    }, [refetchTrades]),
-  );
-
-  useWsEvent(
-    "tradeResolved",
-    useCallback(() => {
-      refetchTrades();
-    }, [refetchTrades]),
-  );
-
-  useWsEvent(
-    "stopLossTriggered",
-    useCallback(() => {
-      refetchTrades();
-    }, [refetchTrades]),
-  );
-
   // Derive counts
   const openTrades = useMemo(
     () => trades.filter((t) => t.status === "OPEN"),
     [trades],
   );
-  const closedTrades = useMemo(
-    () => trades.filter((t) => t.status === "CLOSED"),
-    [trades],
-  );
+
+  // Primary live market (earliest ending, from getLiveMarkets sorted output)
+  const primaryMarket = liveMarkets[0] ?? null;
+
+  // Flat map of all live prices keyed by tokenId, for TradesTable real-time P&L
+  const livePricesMap = useMemo<Record<string, LiveMarketPrice>>(() => {
+    const map: Record<string, LiveMarketPrice> = {};
+    for (const m of liveMarkets) {
+      for (const [tokenId, price] of Object.entries(m.prices)) {
+        map[tokenId] = price;
+      }
+    }
+    return map;
+  }, [liveMarkets]);
 
   // Determine window label from config
   const windowLabel = stats?.config?.marketWindow
@@ -113,6 +104,7 @@ export function DashboardPage() {
         <BtcStatusPanel
           stats={stats}
           btcPrice={currentBtcPrice}
+          primaryMarket={primaryMarket}
           activeMarketsCount={markets.length}
           openTradesCount={openTrades.length}
           windowLabel={windowLabel}
@@ -152,6 +144,7 @@ export function DashboardPage() {
                 <TradesTable
                   trades={trades}
                   loading={tradesLoading}
+                  livePrices={livePricesMap}
                   onTradeClick={setSelectedTrade}
                 />
               </TabsContent>
@@ -268,9 +261,20 @@ export function DashboardPage() {
 
 /* ─── Sub-components ───────────────────────────────────────── */
 
+function polymarketUrl(market: LiveMarketInfo): string {
+  if (market.slug) return `https://polymarket.com/event/${market.slug}`;
+  return `https://polymarket.com/market/${market.marketId}`;
+}
+
+function polymarketMarketUrl(market: DiscoveredMarket): string {
+  if (market.slug) return `https://polymarket.com/event/${market.slug}`;
+  return `https://polymarket.com/market/${market.id}`;
+}
+
 function BtcStatusPanel({
   stats,
   btcPrice,
+  primaryMarket,
   activeMarketsCount,
   openTradesCount,
   windowLabel,
@@ -278,6 +282,7 @@ function BtcStatusPanel({
 }: {
   stats: SystemStats | null;
   btcPrice: { price: number; timestamp: number } | null;
+  primaryMarket: LiveMarketInfo | null;
   activeMarketsCount: number;
   openTradesCount: number;
   windowLabel: string;
@@ -285,11 +290,34 @@ function BtcStatusPanel({
 }) {
   const isRunning = stats?.orchestrator.running ?? false;
 
+  // Countdown to primary market end
+  const countdown = useCountdown(primaryMarket?.endDate ?? null);
+
+  // Live UP / DOWN prices from primary market
+  const upPrice = primaryMarket
+    ? (primaryMarket.prices[primaryMarket.yesTokenId]?.mid ?? null)
+    : null;
+  const downPrice = primaryMarket
+    ? (primaryMarket.prices[primaryMarket.noTokenId]?.mid ?? null)
+    : null;
+
+  const fmtPct = (v: number | null) =>
+    v !== null ? `${(v * 100).toFixed(1)}¢` : "—";
+
+  const fmtCountdown = () => {
+    if (!countdown) return "—";
+    if (countdown.expired) return "EXPIRED";
+    const { days, hours, minutes, seconds } = countdown;
+    if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+    if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+    return `${minutes}m ${seconds}s`;
+  };
+
   return (
     <div className="border border-border/30 rounded-lg bg-card/30 overflow-hidden">
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 p-4 min-h-[140px]">
         {/* BTC PRICE */}
-        <div className="col-span-1 lg:col-span-5 bg-gradient-to-br from-card/40 to-card/20 rounded-xl border border-border/20 p-3 lg:p-4 flex flex-col justify-center items-center relative overflow-hidden">
+        <div className="col-span-1 lg:col-span-4 bg-gradient-to-br from-card/40 to-card/20 rounded-xl border border-border/20 p-3 lg:p-4 flex flex-col justify-center items-center relative overflow-hidden">
           <div className="absolute inset-0 bg-gradient-to-r from-amber-500/5 via-transparent to-blue-500/5" />
           <div className="relative z-10 text-center">
             <div className="flex items-center justify-center gap-2 mb-1">
@@ -315,8 +343,75 @@ function BtcStatusPanel({
           </div>
         </div>
 
-        {/* STATUS INDICATORS */}
-        <div className="col-span-1 lg:col-span-3 flex flex-col gap-2">
+        {/* UP / DOWN PRICE BUTTONS */}
+        <div className="col-span-1 lg:col-span-4 flex flex-col gap-2 justify-center">
+          {/* UP button */}
+          <a
+            href={primaryMarket ? polymarketUrl(primaryMarket) : undefined}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={`flex items-center justify-between gap-2 px-3 py-2 rounded-lg border transition-colors ${
+              upPrice !== null
+                ? "border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 cursor-pointer"
+                : "border-border/20 bg-card/20 opacity-50 cursor-default pointer-events-none"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-lg leading-none">▲</span>
+              <span className="text-xs font-mono font-bold text-emerald-400">
+                UP
+              </span>
+            </div>
+            <span className="text-base font-bold font-mono tabular-nums text-emerald-400">
+              {fmtPct(upPrice)}
+            </span>
+          </a>
+
+          {/* DOWN button */}
+          <a
+            href={primaryMarket ? polymarketUrl(primaryMarket) : undefined}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={`flex items-center justify-between gap-2 px-3 py-2 rounded-lg border transition-colors ${
+              downPrice !== null
+                ? "border-red-500/40 bg-red-500/10 hover:bg-red-500/20 cursor-pointer"
+                : "border-border/20 bg-card/20 opacity-50 cursor-default pointer-events-none"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-lg leading-none">▼</span>
+              <span className="text-xs font-mono font-bold text-red-400">
+                DOWN
+              </span>
+            </div>
+            <span className="text-base font-bold font-mono tabular-nums text-red-400">
+              {fmtPct(downPrice)}
+            </span>
+          </a>
+        </div>
+
+        {/* TIMER + ENGINE STATUS + POLYMARKET LINK */}
+        <div className="col-span-1 lg:col-span-4 flex flex-col gap-2">
+          {/* Countdown */}
+          <div className="bg-card/20 rounded-lg p-2 flex items-center justify-between">
+            <div className="text-xs font-mono text-muted-foreground">
+              ⏱ CLOSES IN
+            </div>
+            <div
+              className={`text-sm font-bold font-mono tabular-nums ${
+                countdown &&
+                !countdown.expired &&
+                countdown.hours === 0 &&
+                countdown.minutes < 5
+                  ? "text-red-400 animate-pulse"
+                  : "text-foreground"
+              }`}
+            >
+              {fmtCountdown()}
+            </div>
+          </div>
+
+          {/* Engine status */}
           <div className="bg-card/20 rounded-lg p-2 flex items-center justify-between">
             <div className="text-xs font-mono text-muted-foreground">
               ENGINE
@@ -327,56 +422,26 @@ function BtcStatusPanel({
               {isRunning ? "RUNNING" : "STOPPED"}
             </div>
           </div>
-          <div className="bg-card/20 rounded-lg p-2 flex items-center justify-between">
-            <div className="text-xs font-mono text-muted-foreground">
-              MARKETS
-            </div>
-            <div className="text-sm font-bold font-mono text-foreground">
-              {activeMarketsCount}
-            </div>
-          </div>
-          <div className="bg-card/20 rounded-lg p-2 flex items-center justify-between">
-            <div className="text-xs font-mono text-muted-foreground">
-              OPEN POSITIONS
-            </div>
-            <div className="text-sm font-bold font-mono text-foreground">
-              {openTradesCount}
-            </div>
-          </div>
-        </div>
 
-        {/* STRATEGY INFO */}
-        <div className="col-span-1 lg:col-span-4 space-y-2">
-          {stats?.config ? (
-            <>
-              <div className="bg-card/20 rounded-lg p-2 flex items-center justify-between">
-                <div className="text-xs font-mono text-muted-foreground">
-                  ENTRY ≥
-                </div>
-                <div className="text-sm font-bold font-mono text-foreground">
-                  {(stats.config.entryPriceThreshold * 100).toFixed(0)}¢
-                </div>
-              </div>
-              <div className="bg-card/20 rounded-lg p-2 flex items-center justify-between">
-                <div className="text-xs font-mono text-muted-foreground">
-                  TRADE WINDOW
-                </div>
-                <div className="text-sm font-bold font-mono text-foreground">
-                  Last {stats.config.tradeFromWindowSeconds}s
-                </div>
-              </div>
-              <div className="bg-card/20 rounded-lg p-2 flex items-center justify-between">
-                <div className="text-xs font-mono text-muted-foreground">
-                  SIM AMOUNT
-                </div>
-                <div className="text-sm font-bold font-mono text-foreground">
-                  ${stats.config.simulationAmountUsd}
-                </div>
-              </div>
-            </>
+          {/* Polymarket link for active market */}
+          {primaryMarket ? (
+            <a
+              href={polymarketUrl(primaryMarket)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-blue-500/30 bg-blue-500/10 hover:bg-blue-500/20 transition-colors text-xs font-mono font-bold text-blue-400"
+            >
+              <span>↗</span>
+              <span>POLYMARKET</span>
+            </a>
           ) : (
-            <div className="flex-1 flex items-center justify-center text-xs font-mono text-muted-foreground py-8">
-              {mounted ? "Connecting…" : "Loading…"}
+            <div className="bg-card/20 rounded-lg p-2 flex items-center justify-between opacity-40">
+              <div className="text-xs font-mono text-muted-foreground">
+                OPEN POSITIONS
+              </div>
+              <div className="text-sm font-bold font-mono text-foreground">
+                {openTradesCount}
+              </div>
             </div>
           )}
         </div>
@@ -483,16 +548,23 @@ function MarketsPanel({
         </thead>
         <tbody>
           {markets.map((market) => {
-            const windowLabel =
+            const label =
               MARKET_WINDOW_LABELS[market.windowType as MarketWindow] ??
               market.windowType;
+            const href = polymarketMarketUrl(market);
 
             return (
               <tr
                 key={market.id}
-                className={`border-b border-border/10 hover:bg-muted/20 transition-colors ${
-                  market.active ? "bg-emerald-500/5" : ""
+                className={`border-b border-border/10 transition-colors cursor-pointer ${
+                  market.active
+                    ? "bg-emerald-500/5 hover:bg-emerald-500/10"
+                    : "hover:bg-muted/20"
                 }`}
+                onClick={() =>
+                  window.open(href, "_blank", "noopener,noreferrer")
+                }
+                title="Open on Polymarket"
               >
                 <td className="py-2.5 px-2 max-w-[200px]">
                   <div className="flex flex-col gap-0.5">
@@ -505,7 +577,7 @@ function MarketsPanel({
                   </div>
                 </td>
                 <td className="py-2.5 px-2">
-                  <span className="text-muted-foreground">{windowLabel}</span>
+                  <span className="text-muted-foreground">{label}</span>
                 </td>
                 <td className="py-2.5 px-2">
                   {market.active ? (

@@ -297,6 +297,7 @@ export class ApiServer {
       type: "systemState",
       data: {
         ...orchestrator.getStats(),
+        liveMarkets: orchestrator.getLiveMarkets(),
         btcPrice: btcWatcher.getCurrentPrice(),
         timestamp: Date.now(),
       },

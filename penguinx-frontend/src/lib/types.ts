@@ -39,6 +39,26 @@ export interface SimulatedTrade {
 }
 
 // ============================================
+// Live market types (pushed via WebSocket systemState)
+// ============================================
+
+export interface LiveMarketPrice {
+  bid: number;
+  ask: number;
+  mid: number;
+}
+
+export interface LiveMarketInfo {
+  marketId: string;
+  question: string;
+  slug: string | null;
+  endDate: string; // ISO string
+  yesTokenId: string;
+  noTokenId: string;
+  prices: Record<string, LiveMarketPrice>;
+}
+
+// ============================================
 // System stats types
 // ============================================
 
@@ -63,6 +83,7 @@ export interface SystemStats {
     btcConnected: boolean;
     btcPrice: number | null;
   };
+  liveMarkets: LiveMarketInfo[];
   btcPrice: { price: number; timestamp: number } | null;
   config: {
     marketWindow: string;

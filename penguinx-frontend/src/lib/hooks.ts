@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { getApiClient, getWsClient } from "./api-client";
 import type {
   SimulatedTrade,
   SystemStats,
+  LiveMarketInfo,
   DiscoveredMarket,
   ExperimentRun,
   PerformanceMetrics,
@@ -13,7 +14,11 @@ import type {
 } from "./types";
 
 /**
- * Hook to fetch simulated trades.
+ * WS-driven trades hook.
+ * - Initial load via REST
+ * - tradeOpened → prepend to list
+ * - tradeResolved / stopLossTriggered → update in place
+ * No periodic polling.
  */
 export function useTrades(status?: string, limit?: number) {
   const [trades, setTrades] = useState<SimulatedTrade[]>([]);
@@ -38,7 +43,65 @@ export function useTrades(status?: string, limit?: number) {
     fetchTrades();
   }, [fetchTrades]);
 
+  // WS-driven updates — no polling
+  useEffect(() => {
+    const ws = getWsClient();
+    ws.connect();
+
+    const unsubOpened = ws.on("tradeOpened", (msg: WsMessage) => {
+      const trade = (msg.data as { trade?: SimulatedTrade })?.trade;
+      if (!trade) return;
+      setTrades((prev) => {
+        // Avoid dupes
+        if (prev.some((t) => t.id === trade.id)) return prev;
+        return [trade, ...prev];
+      });
+    });
+
+    const unsubResolved = ws.on("tradeResolved", (msg: WsMessage) => {
+      const trade = (msg.data as { trade?: SimulatedTrade })?.trade;
+      if (!trade) return;
+      setTrades((prev) => prev.map((t) => (t.id === trade.id ? trade : t)));
+    });
+
+    const unsubStopLoss = ws.on("stopLossTriggered", (msg: WsMessage) => {
+      const trade = (msg.data as { trade?: SimulatedTrade })?.trade;
+      if (!trade) return;
+      setTrades((prev) => prev.map((t) => (t.id === trade.id ? trade : t)));
+    });
+
+    return () => {
+      unsubOpened();
+      unsubResolved();
+      unsubStopLoss();
+    };
+  }, []);
+
   return { trades, loading, error, refetch: fetchTrades };
+}
+
+/**
+ * Hook providing live market info from the systemState WS broadcast.
+ * Resolves every 2 s with fresh prices + endDate.
+ */
+export function useLiveMarkets(): LiveMarketInfo[] {
+  const [liveMarkets, setLiveMarkets] = useState<LiveMarketInfo[]>([]);
+
+  useEffect(() => {
+    const ws = getWsClient();
+    ws.connect();
+
+    const unsub = ws.on("systemState", (msg: WsMessage) => {
+      const data = msg.data as SystemStats | undefined;
+      if (data?.liveMarkets) {
+        setLiveMarkets(data.liveMarkets);
+      }
+    });
+
+    return unsub;
+  }, []);
+
+  return liveMarkets;
 }
 
 /**
@@ -236,6 +299,42 @@ export function useWsEvent(
     const unsubscribe = ws.on(eventType, callback);
     return unsubscribe;
   }, [eventType, callback]);
+}
+
+/**
+ * Countdown timer hook — returns { days, hours, minutes, seconds, expired }.
+ */
+export function useCountdown(endDate: string | null) {
+  const calcRemaining = useCallback(() => {
+    if (!endDate) return null;
+    const diff = new Date(endDate).getTime() - Date.now();
+    if (diff <= 0)
+      return { days: 0, hours: 0, minutes: 0, seconds: 0, expired: true };
+    const totalSeconds = Math.floor(diff / 1000);
+    return {
+      days: Math.floor(totalSeconds / 86400),
+      hours: Math.floor((totalSeconds % 86400) / 3600),
+      minutes: Math.floor((totalSeconds % 3600) / 60),
+      seconds: totalSeconds % 60,
+      expired: false,
+    };
+  }, [endDate]);
+
+  const [remaining, setRemaining] = useState(calcRemaining);
+
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    setRemaining(calcRemaining());
+    timerRef.current = setInterval(() => {
+      setRemaining(calcRemaining());
+    }, 1000);
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [calcRemaining]);
+
+  return remaining;
 }
 
 /**
