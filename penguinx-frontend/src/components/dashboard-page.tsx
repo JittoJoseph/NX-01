@@ -14,23 +14,40 @@ import {
   useWsConnection,
   useWsEvent,
 } from "@/lib/hooks";
-import type { SimulatedTrade, DiscoveredMarket, SystemStats } from "@/lib/types";
+import type {
+  SimulatedTrade,
+  DiscoveredMarket,
+  SystemStats,
+} from "@/lib/types";
 import { MARKET_WINDOW_LABELS, type MarketWindow } from "@/lib/types";
 
 export function DashboardPage() {
   const [activeTab, setActiveTab] = useState("trades");
-  const [selectedTrade, setSelectedTrade] = useState<SimulatedTrade | null>(null);
+  const [selectedTrade, setSelectedTrade] = useState<SimulatedTrade | null>(
+    null,
+  );
   const [mounted, setMounted] = useState(false);
-  const [btcPrice, setBtcPrice] = useState<{ price: number; timestamp: number } | null>(null);
+  const [btcPrice, setBtcPrice] = useState<{
+    price: number;
+    timestamp: number;
+  } | null>(null);
 
   useEffect(() => {
     setMounted(true);
   }, []);
 
   // Data hooks
-  const { trades, loading: tradesLoading, refetch: refetchTrades } = useTrades(undefined, 100);
+  const {
+    trades,
+    loading: tradesLoading,
+    refetch: refetchTrades,
+  } = useTrades(undefined, 100);
   const { stats, loading: statsLoading } = useSystemStats();
-  const { markets, loading: marketsLoading, refetch: refetchMarkets } = useActiveMarkets();
+  const {
+    markets,
+    loading: marketsLoading,
+    refetch: refetchMarkets,
+  } = useActiveMarkets();
 
   // WebSocket live events
   useWsConnection();
@@ -69,12 +86,19 @@ export function DashboardPage() {
   );
 
   // Derive counts
-  const openTrades = useMemo(() => trades.filter((t) => t.status === "OPEN"), [trades]);
-  const closedTrades = useMemo(() => trades.filter((t) => t.status === "CLOSED"), [trades]);
+  const openTrades = useMemo(
+    () => trades.filter((t) => t.status === "OPEN"),
+    [trades],
+  );
+  const closedTrades = useMemo(
+    () => trades.filter((t) => t.status === "CLOSED"),
+    [trades],
+  );
 
   // Determine window label from config
   const windowLabel = stats?.config?.marketWindow
-    ? MARKET_WINDOW_LABELS[stats.config.marketWindow as MarketWindow] ?? stats.config.marketWindow
+    ? (MARKET_WINDOW_LABELS[stats.config.marketWindow as MarketWindow] ??
+      stats.config.marketWindow)
     : "BTC WINDOW";
 
   // Current BTC price (prefer WS-updated, fallback to stats)
@@ -102,7 +126,11 @@ export function DashboardPage() {
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
           {/* Left: Trades panel */}
           <div className="border border-border/30 rounded-lg bg-card/30 overflow-hidden">
-            <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+            <Tabs
+              value={activeTab}
+              onValueChange={setActiveTab}
+              className="w-full"
+            >
               <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
                 <TabsList className="bg-transparent gap-2 h-auto p-0">
                   <TabsTrigger
@@ -148,10 +176,7 @@ export function DashboardPage() {
                 </div>
               ) : stats ? (
                 <div className="space-y-2 text-xs font-mono">
-                  <StatRow
-                    label="Window Type"
-                    value={windowLabel}
-                  />
+                  <StatRow label="Window Type" value={windowLabel} />
                   <StatRow
                     label="Open Positions"
                     value={stats.orchestrator.openPositions.toString()}
@@ -175,7 +200,11 @@ export function DashboardPage() {
                   />
                   <StatRow
                     label="CLOB WS"
-                    value={stats.orchestrator.ws.connected ? "CONNECTED" : "DISCONNECTED"}
+                    value={
+                      stats.orchestrator.ws.connected
+                        ? "CONNECTED"
+                        : "DISCONNECTED"
+                    }
                     accent={stats.orchestrator.ws.connected}
                   />
                   <StatRow
@@ -191,12 +220,30 @@ export function DashboardPage() {
             <SidebarCard title="CONFIGURATION">
               {stats?.config ? (
                 <div className="space-y-2 text-xs font-mono">
-                  <StatRow label="Entry Threshold" value={`${(stats.config.entryPriceThreshold * 100).toFixed(0)}¢`} />
-                  <StatRow label="Trade Window" value={`${stats.config.tradeFromWindowSeconds}s`} />
-                  <StatRow label="Sim Amount" value={`$${stats.config.simulationAmountUsd}`} />
-                  <StatRow label="Max Positions" value={stats.config.maxSimultaneousPositions.toString()} />
-                  <StatRow label="BTC Min Dist" value={`${stats.config.minBtcDistancePercent}%`} />
-                  <StatRow label="Stop Loss" value={`${(stats.config.stopLossThreshold * 100).toFixed(0)}¢`} />
+                  <StatRow
+                    label="Entry Threshold"
+                    value={`${(stats.config.entryPriceThreshold * 100).toFixed(0)}¢`}
+                  />
+                  <StatRow
+                    label="Trade Window"
+                    value={`${stats.config.tradeFromWindowSeconds}s`}
+                  />
+                  <StatRow
+                    label="Sim Amount"
+                    value={`$${stats.config.simulationAmountUsd}`}
+                  />
+                  <StatRow
+                    label="Max Positions"
+                    value={stats.config.maxSimultaneousPositions.toString()}
+                  />
+                  <StatRow
+                    label="BTC Min Dist"
+                    value={`$${stats.config.minBtcDistanceUsd}`}
+                  />
+                  <StatRow
+                    label="Stop Loss"
+                    value={`${(stats.config.stopLossThreshold * 100).toFixed(0)}¢`}
+                  />
                 </div>
               ) : (
                 <div className="text-xs text-muted-foreground font-mono py-4 text-center">
@@ -258,7 +305,9 @@ function BtcStatusPanel({
               </span>
             </div>
             <div className="text-3xl lg:text-4xl font-bold font-mono tabular-nums mb-1 text-foreground">
-              {btcPrice ? `$${btcPrice.price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
+              {btcPrice
+                ? `$${btcPrice.price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                : "—"}
             </div>
             <div className="text-xs font-mono text-muted-foreground tracking-wider">
               {windowLabel}
@@ -269,18 +318,30 @@ function BtcStatusPanel({
         {/* STATUS INDICATORS */}
         <div className="col-span-1 lg:col-span-3 flex flex-col gap-2">
           <div className="bg-card/20 rounded-lg p-2 flex items-center justify-between">
-            <div className="text-xs font-mono text-muted-foreground">ENGINE</div>
-            <div className={`text-sm font-bold font-mono ${isRunning ? "text-emerald-500" : "text-red-500"}`}>
+            <div className="text-xs font-mono text-muted-foreground">
+              ENGINE
+            </div>
+            <div
+              className={`text-sm font-bold font-mono ${isRunning ? "text-emerald-500" : "text-red-500"}`}
+            >
               {isRunning ? "RUNNING" : "STOPPED"}
             </div>
           </div>
           <div className="bg-card/20 rounded-lg p-2 flex items-center justify-between">
-            <div className="text-xs font-mono text-muted-foreground">MARKETS</div>
-            <div className="text-sm font-bold font-mono text-foreground">{activeMarketsCount}</div>
+            <div className="text-xs font-mono text-muted-foreground">
+              MARKETS
+            </div>
+            <div className="text-sm font-bold font-mono text-foreground">
+              {activeMarketsCount}
+            </div>
           </div>
           <div className="bg-card/20 rounded-lg p-2 flex items-center justify-between">
-            <div className="text-xs font-mono text-muted-foreground">OPEN POSITIONS</div>
-            <div className="text-sm font-bold font-mono text-foreground">{openTradesCount}</div>
+            <div className="text-xs font-mono text-muted-foreground">
+              OPEN POSITIONS
+            </div>
+            <div className="text-sm font-bold font-mono text-foreground">
+              {openTradesCount}
+            </div>
           </div>
         </div>
 
@@ -289,19 +350,25 @@ function BtcStatusPanel({
           {stats?.config ? (
             <>
               <div className="bg-card/20 rounded-lg p-2 flex items-center justify-between">
-                <div className="text-xs font-mono text-muted-foreground">ENTRY ≥</div>
+                <div className="text-xs font-mono text-muted-foreground">
+                  ENTRY ≥
+                </div>
                 <div className="text-sm font-bold font-mono text-foreground">
                   {(stats.config.entryPriceThreshold * 100).toFixed(0)}¢
                 </div>
               </div>
               <div className="bg-card/20 rounded-lg p-2 flex items-center justify-between">
-                <div className="text-xs font-mono text-muted-foreground">TRADE WINDOW</div>
+                <div className="text-xs font-mono text-muted-foreground">
+                  TRADE WINDOW
+                </div>
                 <div className="text-sm font-bold font-mono text-foreground">
                   Last {stats.config.tradeFromWindowSeconds}s
                 </div>
               </div>
               <div className="bg-card/20 rounded-lg p-2 flex items-center justify-between">
-                <div className="text-xs font-mono text-muted-foreground">SIM AMOUNT</div>
+                <div className="text-xs font-mono text-muted-foreground">
+                  SIM AMOUNT
+                </div>
                 <div className="text-sm font-bold font-mono text-foreground">
                   ${stats.config.simulationAmountUsd}
                 </div>
@@ -318,7 +385,13 @@ function BtcStatusPanel({
   );
 }
 
-function SidebarCard({ title, children }: { title: string; children: React.ReactNode }) {
+function SidebarCard({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="border border-border/30 rounded-lg bg-card/30 p-3">
       <div className="text-[10px] text-muted-foreground tracking-widest mb-2 border-b border-border/20 pb-1">
@@ -329,11 +402,21 @@ function SidebarCard({ title, children }: { title: string; children: React.React
   );
 }
 
-function StatRow({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
+function StatRow({
+  label,
+  value,
+  accent,
+}: {
+  label: string;
+  value: string;
+  accent?: boolean;
+}) {
   return (
     <div className="flex justify-between">
       <span className="text-muted-foreground">{label}</span>
-      <span className={accent ? "text-emerald-500" : "text-foreground"}>{value}</span>
+      <span className={accent ? "text-emerald-500" : "text-foreground"}>
+        {value}
+      </span>
     </div>
   );
 }
@@ -369,7 +452,9 @@ function MarketsPanel({
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
-        <div className="text-sm text-muted-foreground font-mono animate-pulse">Loading markets...</div>
+        <div className="text-sm text-muted-foreground font-mono animate-pulse">
+          Loading markets...
+        </div>
       </div>
     );
   }
@@ -377,7 +462,9 @@ function MarketsPanel({
   if (markets.length === 0) {
     return (
       <div className="flex items-center justify-center py-12">
-        <div className="text-sm text-muted-foreground font-mono">No active markets discovered.</div>
+        <div className="text-sm text-muted-foreground font-mono">
+          No active markets discovered.
+        </div>
       </div>
     );
   }
@@ -396,7 +483,9 @@ function MarketsPanel({
         </thead>
         <tbody>
           {markets.map((market) => {
-            const windowLabel = MARKET_WINDOW_LABELS[market.windowType as MarketWindow] ?? market.windowType;
+            const windowLabel =
+              MARKET_WINDOW_LABELS[market.windowType as MarketWindow] ??
+              market.windowType;
 
             return (
               <tr
@@ -431,7 +520,9 @@ function MarketsPanel({
                   )}
                 </td>
                 <td className="py-2.5 px-2 text-right tabular-nums text-foreground">
-                  {market.targetPrice ? `$${parseFloat(market.targetPrice).toLocaleString()}` : "—"}
+                  {market.targetPrice
+                    ? `$${parseFloat(market.targetPrice).toLocaleString()}`
+                    : "—"}
                 </td>
                 <td className="py-2.5 px-2 text-right tabular-nums text-muted-foreground">
                   {market.endDate

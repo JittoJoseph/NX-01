@@ -156,7 +156,10 @@ export class MarketWebSocketWatcher extends EventEmitter {
       });
 
       this.ws.on("close", (code: number, reason: Buffer) => {
-        logger.warn({ code, reason: reason.toString() }, "CLOB WebSocket closed");
+        logger.warn(
+          { code, reason: reason.toString() },
+          "CLOB WebSocket closed",
+        );
         this.cleanup();
         this.emit("disconnected", { code, reason: reason.toString() });
         this.scheduleReconnect();
@@ -173,9 +176,10 @@ export class MarketWebSocketWatcher extends EventEmitter {
   }
 
   private handleMessage(msg: ClobWsMessage): void {
-    const ts = typeof msg.timestamp === "string"
-      ? parseInt(msg.timestamp, 10)
-      : msg.timestamp ?? Date.now();
+    const ts =
+      typeof msg.timestamp === "string"
+        ? parseInt(msg.timestamp, 10)
+        : (msg.timestamp ?? Date.now());
 
     switch (msg.event_type) {
       case "book":
@@ -226,7 +230,11 @@ export class MarketWebSocketWatcher extends EventEmitter {
       case "tick_size_change":
         if (msg.asset_id && msg.old_tick_size && msg.new_tick_size) {
           logger.warn(
-            { tokenId: msg.asset_id, old: msg.old_tick_size, new: msg.new_tick_size },
+            {
+              tokenId: msg.asset_id,
+              old: msg.old_tick_size,
+              new: msg.new_tick_size,
+            },
             "Tick size changed — price near extremes",
           );
           this.emit("tickSizeChange", {
@@ -269,13 +277,19 @@ export class MarketWebSocketWatcher extends EventEmitter {
 
   private scheduleReconnect(): void {
     if (!this.running) return;
-    const delay = Math.min(
-      MarketWebSocketWatcher.BASE_RECONNECT_DELAY * Math.pow(2, this.reconnectAttempt),
-      MarketWebSocketWatcher.MAX_RECONNECT_DELAY,
-    ) + Math.random() * 300;
+    const delay =
+      Math.min(
+        MarketWebSocketWatcher.BASE_RECONNECT_DELAY *
+          Math.pow(2, this.reconnectAttempt),
+        MarketWebSocketWatcher.MAX_RECONNECT_DELAY,
+      ) +
+      Math.random() * 300;
 
     this.reconnectAttempt++;
-    logger.info({ delay: Math.round(delay), attempt: this.reconnectAttempt }, "CLOB reconnecting");
+    logger.info(
+      { delay: Math.round(delay), attempt: this.reconnectAttempt },
+      "CLOB reconnecting",
+    );
     this.reconnectTimer = setTimeout(() => this.connect(), delay);
   }
 }

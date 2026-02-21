@@ -9,7 +9,11 @@ interface TradesTableProps {
   onTradeClick?: (trade: SimulatedTrade) => void;
 }
 
-export function TradesTable({ trades, loading, onTradeClick }: TradesTableProps) {
+export function TradesTable({
+  trades,
+  loading,
+  onTradeClick,
+}: TradesTableProps) {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-16">
@@ -27,7 +31,9 @@ export function TradesTable({ trades, loading, onTradeClick }: TradesTableProps)
         <div className="w-8 h-8 rounded-full border border-border/30 flex items-center justify-center text-muted-foreground/40 text-sm">
           ○
         </div>
-        <div className="text-sm text-muted-foreground font-mono">No trades yet</div>
+        <div className="text-sm text-muted-foreground font-mono">
+          No trades yet
+        </div>
         <div className="text-xs text-muted-foreground/50 font-mono">
           Waiting for end-of-window opportunities…
         </div>
@@ -75,8 +81,11 @@ export function TradesTable({ trades, loading, onTradeClick }: TradesTableProps)
             const isClosed = trade.status === "CLOSED";
 
             // Exit price for closed trades
-            const exitPrice = trade.exitPrice ? parseFloat(trade.exitPrice) : null;
-            const exitCents = exitPrice !== null ? Math.round(exitPrice * 100) : null;
+            const exitPrice = trade.exitPrice
+              ? parseFloat(trade.exitPrice)
+              : null;
+            const exitCents =
+              exitPrice !== null ? Math.round(exitPrice * 100) : null;
 
             // P&L
             const realizedPnl = parseFloat(trade.realizedPnl || "0");
@@ -84,7 +93,9 @@ export function TradesTable({ trades, loading, onTradeClick }: TradesTableProps)
             const pnlPositive = realizedPnl >= 0;
 
             // BTC distance
-            const btcDist = trade.btcDistancePercent ? parseFloat(trade.btcDistancePercent) : null;
+            const btcDist = trade.btcDistanceUsd
+              ? parseFloat(trade.btcDistanceUsd)
+              : null;
 
             // Window label
             const windowInfo = extractTimeWindow(trade);
@@ -100,8 +111,12 @@ export function TradesTable({ trades, loading, onTradeClick }: TradesTableProps)
                 {/* WINDOW */}
                 <td className="py-3 px-3">
                   <div className="flex flex-col gap-0.5">
-                    <span className="text-foreground text-xs">{windowInfo.time}</span>
-                    <span className="text-[10px] text-muted-foreground/60">{windowInfo.date}</span>
+                    <span className="text-foreground text-xs">
+                      {windowInfo.time}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground/60">
+                      {windowInfo.date}
+                    </span>
                   </div>
                 </td>
 
@@ -121,7 +136,9 @@ export function TradesTable({ trades, loading, onTradeClick }: TradesTableProps)
 
                 {/* ENTRY */}
                 <td className="py-3 px-3 text-right">
-                  <span className="text-foreground tabular-nums">{entryCents}¢</span>
+                  <span className="text-foreground tabular-nums">
+                    {entryCents}¢
+                  </span>
                 </td>
 
                 {/* EXIT */}
@@ -129,7 +146,9 @@ export function TradesTable({ trades, loading, onTradeClick }: TradesTableProps)
                   {exitCents !== null ? (
                     <span
                       className={`tabular-nums font-medium ${
-                        exitCents >= entryCents ? "text-emerald-500" : "text-red-500"
+                        exitCents >= entryCents
+                          ? "text-emerald-500"
+                          : "text-red-500"
                       }`}
                     >
                       {exitCents}¢
@@ -146,7 +165,7 @@ export function TradesTable({ trades, loading, onTradeClick }: TradesTableProps)
 
                 {/* BTC DISTANCE */}
                 <td className="py-3 px-3 text-right tabular-nums text-muted-foreground">
-                  {btcDist !== null ? `${btcDist.toFixed(2)}%` : "—"}
+                  {btcDist !== null ? `$${btcDist.toFixed(0)}` : "—"}
                 </td>
 
                 {/* P&L */}
@@ -158,7 +177,8 @@ export function TradesTable({ trades, loading, onTradeClick }: TradesTableProps)
                           pnlPositive ? "text-emerald-500" : "text-red-500"
                         }`}
                       >
-                        {pnlPositive ? "+" : ""}${Math.abs(realizedPnl).toFixed(2)}
+                        {pnlPositive ? "+" : ""}$
+                        {Math.abs(realizedPnl).toFixed(2)}
                       </span>
                     </div>
                   ) : (
@@ -198,16 +218,28 @@ export function TradesTable({ trades, loading, onTradeClick }: TradesTableProps)
 
 /* ─── Helpers ──────────────────────────────────────────────── */
 
-function extractTimeWindow(trade: SimulatedTrade): { time: string; date: string } {
+function extractTimeWindow(trade: SimulatedTrade): {
+  time: string;
+  date: string;
+} {
   const entryDate = new Date(trade.entryTs);
   const windowType = trade.windowType as MarketWindow | null;
-  const label = windowType ? (MARKET_WINDOW_LABELS[windowType] ?? windowType) : "";
+  const label = windowType
+    ? (MARKET_WINDOW_LABELS[windowType] ?? windowType)
+    : "";
 
   const fmt = (d: Date) =>
-    d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+    d.toLocaleTimeString("en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
 
   return {
     time: `${fmt(entryDate)} ${label ? `(${label})` : ""}`.trim(),
-    date: entryDate.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+    date: entryDate.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+    }),
   };
 }

@@ -35,11 +35,11 @@ export function loadConfig(): Config {
       entryPriceThreshold: envNum("ENTRY_PRICE_THRESHOLD", 0.97),
       maxSimultaneousPositions: envNum("MAX_SIMULTANEOUS_POSITIONS", 5),
       resolutionWatchMinutes: envNum("RESOLUTION_WATCH_MINUTES", 5),
-      minBtcDistancePercent: envNum("MIN_BTC_DISTANCE_PERCENT", 0.1),
+      minBtcDistanceUsd: envNum("MIN_BTC_DISTANCE_USD", 50),
       scanIntervalMs: envNum("SCAN_INTERVAL_MS", 60000),
     },
     stopLoss: {
-      threshold: envNum("STOP_LOSS_THRESHOLD", 0.50),
+      threshold: envNum("STOP_LOSS_THRESHOLD", 0.5),
     },
     wipe: {
       password: env("WIPE_PASSWORD"),

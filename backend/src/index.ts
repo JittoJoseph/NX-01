@@ -22,7 +22,7 @@ async function main(): Promise<void> {
       tradeWindowSec: config.strategy.tradeFromWindowSeconds,
       simAmount: config.simulation.amountUsd,
       maxPositions: config.strategy.maxSimultaneousPositions,
-      minBtcDistance: config.strategy.minBtcDistancePercent,
+      minBtcDistance: config.strategy.minBtcDistanceUsd,
       stopLoss: config.stopLoss.threshold,
     },
     "Configuration loaded",

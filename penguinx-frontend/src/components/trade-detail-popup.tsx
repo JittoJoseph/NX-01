@@ -15,7 +15,11 @@ interface TradeDetailPopupProps {
   onClose: () => void;
 }
 
-export function TradeDetailPopup({ trade, open, onClose }: TradeDetailPopupProps) {
+export function TradeDetailPopup({
+  trade,
+  open,
+  onClose,
+}: TradeDetailPopupProps) {
   if (!trade) return null;
 
   const isClosed = trade.status === "CLOSED";
@@ -23,36 +27,59 @@ export function TradeDetailPopup({ trade, open, onClose }: TradeDetailPopupProps
   const entryFees = parseFloat(trade.entryFees || "0");
   const pnl = parseFloat(trade.realizedPnl || "0");
   const exitPrice = trade.exitPrice ? parseFloat(trade.exitPrice) : null;
-  const btcAtEntry = trade.btcPriceAtEntry ? parseFloat(trade.btcPriceAtEntry) : null;
-  const btcTarget = trade.btcTargetPrice ? parseFloat(trade.btcTargetPrice) : null;
-  const btcDist = trade.btcDistancePercent ? parseFloat(trade.btcDistancePercent) : null;
+  const btcAtEntry = trade.btcPriceAtEntry
+    ? parseFloat(trade.btcPriceAtEntry)
+    : null;
+  const btcTarget = trade.btcTargetPrice
+    ? parseFloat(trade.btcTargetPrice)
+    : null;
+  const btcDist = trade.btcDistanceUsd
+    ? parseFloat(trade.btcDistanceUsd)
+    : null;
   const windowLabel = trade.windowType
-    ? MARKET_WINDOW_LABELS[trade.windowType as MarketWindow] ?? trade.windowType
+    ? (MARKET_WINDOW_LABELS[trade.windowType as MarketWindow] ??
+      trade.windowType)
     : "—";
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
       <DialogContent className="max-w-lg font-mono bg-background border-border">
         <DialogHeader>
-          <DialogTitle className="text-sm font-bold tracking-wider">TRADE DETAIL</DialogTitle>
+          <DialogTitle className="text-sm font-bold tracking-wider">
+            TRADE DETAIL
+          </DialogTitle>
         </DialogHeader>
 
         <div className="space-y-4 text-xs">
           {/* Market info */}
           <Section title="MARKET">
             <Row label="Window Type" value={windowLabel} />
-            <Row label="Token ID" value={trade.tokenId ? trade.tokenId.slice(0, 20) + "…" : "—"} />
-            <Row label="Market ID" value={trade.marketId ? trade.marketId.slice(0, 20) + "…" : "—"} />
+            <Row
+              label="Token ID"
+              value={trade.tokenId ? trade.tokenId.slice(0, 20) + "…" : "—"}
+            />
+            <Row
+              label="Market ID"
+              value={trade.marketId ? trade.marketId.slice(0, 20) + "…" : "—"}
+            />
             <Row label="Outcome" value={trade.outcomeLabel || "—"} />
             <Row label="Order Type" value={trade.orderType || "—"} />
-            {trade.experimentId && <Row label="Experiment" value={trade.experimentId} />}
+            {trade.experimentId && (
+              <Row label="Experiment" value={trade.experimentId} />
+            )}
           </Section>
 
           {/* Pricing */}
           <Section title="PRICING">
             <Row label="Entry Price" value={`$${entryPrice.toFixed(6)}`} />
-            <Row label="Shares" value={parseFloat(trade.entryShares).toFixed(4)} />
-            <Row label="USD Amount" value={`$${parseFloat(trade.simulatedUsdAmount).toFixed(4)}`} />
+            <Row
+              label="Shares"
+              value={parseFloat(trade.entryShares).toFixed(4)}
+            />
+            <Row
+              label="USD Amount"
+              value={`$${parseFloat(trade.simulatedUsdAmount).toFixed(4)}`}
+            />
             <Row label="Entry Fees" value={`$${entryFees.toFixed(6)}`} />
             {trade.feeRateBps != null && (
               <Row label="Fee Rate" value={`${trade.feeRateBps} bps`} />
@@ -61,9 +88,18 @@ export function TradeDetailPopup({ trade, open, onClose }: TradeDetailPopupProps
 
           {/* BTC Context */}
           <Section title="BTC CONTEXT">
-            <Row label="BTC at Entry" value={btcAtEntry ? `$${btcAtEntry.toLocaleString()}` : "—"} />
-            <Row label="BTC Target" value={btcTarget ? `$${btcTarget.toLocaleString()}` : "—"} />
-            <Row label="Distance" value={btcDist !== null ? `${btcDist.toFixed(3)}%` : "—"} />
+            <Row
+              label="BTC at Entry"
+              value={btcAtEntry ? `$${btcAtEntry.toLocaleString()}` : "—"}
+            />
+            <Row
+              label="BTC Target"
+              value={btcTarget ? `$${btcTarget.toLocaleString()}` : "—"}
+            />
+            <Row
+              label="Distance"
+              value={btcDist !== null ? `${btcDist.toFixed(3)}%` : "—"}
+            />
           </Section>
 
           {/* Result info */}
@@ -74,7 +110,9 @@ export function TradeDetailPopup({ trade, open, onClose }: TradeDetailPopupProps
                 <span
                   className={
                     isClosed
-                      ? pnl >= 0 ? "text-emerald-500" : "text-red-500"
+                      ? pnl >= 0
+                        ? "text-emerald-500"
+                        : "text-red-500"
                       : "text-blue-500"
                   }
                 >
@@ -100,7 +138,9 @@ export function TradeDetailPopup({ trade, open, onClose }: TradeDetailPopupProps
                 }
               />
             )}
-            {exitPrice !== null && <Row label="Exit Price" value={`$${exitPrice.toFixed(6)}`} />}
+            {exitPrice !== null && (
+              <Row label="Exit Price" value={`$${exitPrice.toFixed(6)}`} />
+            )}
             {isClosed && (
               <Row
                 label="Realized PnL"
@@ -123,19 +163,22 @@ export function TradeDetailPopup({ trade, open, onClose }: TradeDetailPopupProps
 
           {/* Execution */}
           <Section title="EXECUTION">
-            <Row label="Fill Status" value={
-              <span
-                className={
-                  trade.fillStatus === "FULL"
-                    ? "text-emerald-500"
-                    : trade.fillStatus === "PARTIAL"
-                      ? "text-amber-500"
-                      : "text-red-500"
-                }
-              >
-                {trade.fillStatus || "—"}
-              </span>
-            } />
+            <Row
+              label="Fill Status"
+              value={
+                <span
+                  className={
+                    trade.fillStatus === "FULL"
+                      ? "text-emerald-500"
+                      : trade.fillStatus === "PARTIAL"
+                        ? "text-amber-500"
+                        : "text-red-500"
+                  }
+                >
+                  {trade.fillStatus || "—"}
+                </span>
+              }
+            />
             {trade.strategyTrigger && (
               <Row label="Strategy Trigger" value={trade.strategyTrigger} />
             )}
@@ -143,12 +186,21 @@ export function TradeDetailPopup({ trade, open, onClose }: TradeDetailPopupProps
 
           {/* Timestamps */}
           <Section title="TIMESTAMPS">
-            <Row label="Opened" value={new Date(trade.entryTs).toLocaleString()} />
+            <Row
+              label="Opened"
+              value={new Date(trade.entryTs).toLocaleString()}
+            />
             {trade.exitTs && (
-              <Row label="Closed" value={new Date(trade.exitTs).toLocaleString()} />
+              <Row
+                label="Closed"
+                value={new Date(trade.exitTs).toLocaleString()}
+              />
             )}
             {trade.exitTs && (
-              <Row label="Duration" value={formatDuration(trade.entryTs, trade.exitTs)} />
+              <Row
+                label="Duration"
+                value={formatDuration(trade.entryTs, trade.exitTs)}
+              />
             )}
           </Section>
         </div>
@@ -157,7 +209,13 @@ export function TradeDetailPopup({ trade, open, onClose }: TradeDetailPopupProps
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
   return (
     <div>
       <div className="text-[10px] text-muted-foreground tracking-widest border-b border-border/30 pb-1 mb-2">
@@ -168,9 +226,19 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function Row({ label, value, wide }: { label: string; value: React.ReactNode; wide?: boolean }) {
+function Row({
+  label,
+  value,
+  wide,
+}: {
+  label: string;
+  value: React.ReactNode;
+  wide?: boolean;
+}) {
   return (
-    <div className={`flex ${wide ? "flex-col gap-0.5" : "justify-between items-center"}`}>
+    <div
+      className={`flex ${wide ? "flex-col gap-0.5" : "justify-between items-center"}`}
+    >
       <span className="text-muted-foreground">{label}</span>
       <span className="text-foreground">{value}</span>
     </div>

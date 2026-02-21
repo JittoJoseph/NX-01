@@ -59,9 +59,10 @@ export async function calculatePortfolioPerformance(
     .from(schema.simulatedTrades)
     .orderBy(desc(schema.simulatedTrades.entryTs));
 
-  const trades = conditions.length > 0
-    ? await baseQuery.where(and(...conditions))
-    : await baseQuery;
+  const trades =
+    conditions.length > 0
+      ? await baseQuery.where(and(...conditions))
+      : await baseQuery;
 
   let totalPnl = new Decimal(0);
   let totalInvested = new Decimal(0);
@@ -115,25 +116,28 @@ export async function calculatePortfolioPerformance(
       }
     }
 
-    if (trade.btcDistancePercent) {
-      btcDistanceSum = btcDistanceSum.plus(new Decimal(trade.btcDistancePercent));
+    if (trade.btcDistanceUsd) {
+      btcDistanceSum = btcDistanceSum.plus(new Decimal(trade.btcDistanceUsd));
       btcDistanceCount++;
     }
   }
 
   const closedTrades = wins + losses + stopLosses;
   const totalTrades = trades.length;
-  const winRate = closedTrades > 0 ? ((wins / closedTrades) * 100).toFixed(2) : "0.00";
+  const winRate =
+    closedTrades > 0 ? ((wins / closedTrades) * 100).toFixed(2) : "0.00";
   const roi = totalInvested.gt(0)
     ? totalPnl.div(totalInvested).mul(100).toFixed(2)
     : "0.00";
   const avgWin = wins > 0 ? winPnlSum.div(wins).toFixed(6) : "0";
-  const avgLoss = losses + stopLosses > 0
-    ? lossPnlSum.div(losses + stopLosses).toFixed(6)
-    : "0";
-  const avgBtcDistance = btcDistanceCount > 0
-    ? btcDistanceSum.div(btcDistanceCount).toFixed(4)
-    : "0";
+  const avgLoss =
+    losses + stopLosses > 0
+      ? lossPnlSum.div(losses + stopLosses).toFixed(6)
+      : "0";
+  const avgBtcDistance =
+    btcDistanceCount > 0
+      ? btcDistanceSum.div(btcDistanceCount).toFixed(4)
+      : "0";
 
   return {
     period,

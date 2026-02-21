@@ -1,5 +1,9 @@
 import { createModuleLogger } from "../utils/logger.js";
-import { CRYPTO_FEE, type Orderbook, type OrderbookLevel } from "../types/index.js";
+import {
+  CRYPTO_FEE,
+  type Orderbook,
+  type OrderbookLevel,
+} from "../types/index.js";
 import Decimal from "decimal.js";
 
 const logger = createModuleLogger("execution-simulator");

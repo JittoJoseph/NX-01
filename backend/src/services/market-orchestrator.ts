@@ -84,7 +84,8 @@ export class MarketOrchestrator extends EventEmitter {
 
   private activeMarkets: Map<string, ActiveMarketState> = new Map();
   private openPositions: Map<string, OpenPosition> = new Map();
-  private resolutionTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
+  private resolutionTimers: Map<string, ReturnType<typeof setInterval>> =
+    new Map();
   private stopLossTimer: ReturnType<typeof setInterval> | null = null;
 
   private running = false;
@@ -173,37 +174,36 @@ export class MarketOrchestrator extends EventEmitter {
       try {
         await this.onNewMarket(market, event);
       } catch (err) {
-        logger.error({ err, marketId: market?.id }, "Error handling new market");
+        logger.error(
+          { err, marketId: market?.id },
+          "Error handling new market",
+        );
       }
     });
 
     // WS → price updates from CLOB
-    this.wsWatcher.on(
-      "priceUpdate",
-      (ev: PriceUpdateEvent) => this.onPriceUpdate(ev),
+    this.wsWatcher.on("priceUpdate", (ev: PriceUpdateEvent) =>
+      this.onPriceUpdate(ev),
     );
-    this.wsWatcher.on(
-      "bestBidAskUpdate",
-      (ev: BestBidAskEvent) => this.onBestBidAskUpdate(ev),
+    this.wsWatcher.on("bestBidAskUpdate", (ev: BestBidAskEvent) =>
+      this.onBestBidAskUpdate(ev),
     );
-    this.wsWatcher.on(
-      "orderbookUpdate",
-      (ev: OrderbookUpdateEvent) => this.onOrderbookUpdate(ev),
+    this.wsWatcher.on("orderbookUpdate", (ev: OrderbookUpdateEvent) =>
+      this.onOrderbookUpdate(ev),
     );
-    this.wsWatcher.on(
-      "marketResolved",
-      (ev: MarketResolvedEvent) => this.onMarketResolved(ev),
+    this.wsWatcher.on("marketResolved", (ev: MarketResolvedEvent) =>
+      this.onMarketResolved(ev),
     );
 
     // Strategy → opportunity detected
-    this.strategyEngine.on(
-      "opportunityDetected",
-      (opp: MarketOpportunity) => {
-        this.onOpportunity(opp).catch((err) => {
-          logger.error({ err, marketId: opp.marketId }, "Error handling opportunity");
-        });
-      },
-    );
+    this.strategyEngine.on("opportunityDetected", (opp: MarketOpportunity) => {
+      this.onOpportunity(opp).catch((err) => {
+        logger.error(
+          { err, marketId: opp.marketId },
+          "Error handling opportunity",
+        );
+      });
+    });
   }
 
   /**
@@ -217,7 +217,10 @@ export class MarketOrchestrator extends EventEmitter {
     const targetPrice = PolymarketClient.parseTargetPrice(market.question);
 
     if (tokenIds.length < 2 || outcomes.length < 2) {
-      logger.warn({ marketId: market.id }, "Market missing token IDs or outcomes");
+      logger.warn(
+        { marketId: market.id },
+        "Market missing token IDs or outcomes",
+      );
       return;
     }
 
@@ -366,7 +369,10 @@ export class MarketOrchestrator extends EventEmitter {
       // Fetch the full orderbook for this token
       const orderbookResult = await this.client.getOrderbook(opp.tokenId);
       if (!orderbookResult?.data || !orderbookResult.data.asks?.length) {
-        logger.warn({ tokenId: opp.tokenId }, "No orderbook available — skipping");
+        logger.warn(
+          { tokenId: opp.tokenId },
+          "No orderbook available — skipping",
+        );
         return;
       }
       const orderbook = orderbookResult.data;
@@ -389,7 +395,10 @@ export class MarketOrchestrator extends EventEmitter {
       );
 
       if (execution.totalShares <= 0) {
-        logger.warn({ tokenId: opp.tokenId }, "No fill from simulation — skipping");
+        logger.warn(
+          { tokenId: opp.tokenId },
+          "No fill from simulation — skipping",
+        );
         return;
       }
 
@@ -423,7 +432,7 @@ export class MarketOrchestrator extends EventEmitter {
         feeRateBps: execution.feeRateBps,
         btcPriceAtEntry: opp.btcPrice,
         btcTargetPrice: opp.btcTargetPrice,
-        btcDistancePercent: opp.btcDistancePercent,
+        btcDistanceUsd: opp.btcDistanceUsd,
         orderbookSnapshot: execution.orderbookSnapshot,
       });
       const tradeId = tradeRow!.id;
@@ -447,19 +456,24 @@ export class MarketOrchestrator extends EventEmitter {
       // Set up resolution monitoring if market has ended or will end soon
       this.scheduleResolutionMonitor(opp.marketId);
 
-      await logAudit("info", "TRADE_OPENED", `Trade ${tradeId} opened for ${opp.outcomeLabel}`, {
-        tradeId,
-        tokenId: opp.tokenId,
-        outcome: opp.outcomeLabel,
-        avgPrice: execution.averagePrice,
-        shares: execution.totalShares,
-        cost: execution.netCost,
-        expectedProfit,
-        btcPrice: opp.btcPrice,
-        btcTarget: opp.btcTargetPrice,
-        btcDistance: opp.btcDistancePercent,
-        secondsToEnd: opp.secondsToEnd,
-      });
+      await logAudit(
+        "info",
+        "TRADE_OPENED",
+        `Trade ${tradeId} opened for ${opp.outcomeLabel}`,
+        {
+          tradeId,
+          tokenId: opp.tokenId,
+          outcome: opp.outcomeLabel,
+          avgPrice: execution.averagePrice,
+          shares: execution.totalShares,
+          cost: execution.netCost,
+          expectedProfit,
+          btcPrice: opp.btcPrice,
+          btcTarget: opp.btcTargetPrice,
+          btcDistance: opp.btcDistanceUsd,
+          secondsToEnd: opp.secondsToEnd,
+        },
+      );
 
       this.cycleCount++;
       this.emit("tradeOpened", {
@@ -480,7 +494,7 @@ export class MarketOrchestrator extends EventEmitter {
           fees: execution.fees.toFixed(4),
           expectedProfit: expectedProfit.toFixed(4),
           btcPrice: opp.btcPrice.toFixed(2),
-          btcDistance: opp.btcDistancePercent.toFixed(3),
+          btcDistance: opp.btcDistanceUsd.toFixed(2),
         },
         "📈 Simulated trade opened",
       );
@@ -500,7 +514,8 @@ export class MarketOrchestrator extends EventEmitter {
 
     const config = getConfig();
     const checkInterval = 5000; // 5s
-    const maxChecks = (config.strategy.resolutionWatchMinutes * 60 * 1000) / checkInterval;
+    const maxChecks =
+      (config.strategy.resolutionWatchMinutes * 60 * 1000) / checkInterval;
     let checkCount = 0;
 
     const timer = setInterval(async () => {
@@ -593,13 +608,18 @@ export class MarketOrchestrator extends EventEmitter {
         exitPrice.toFixed(6),
       );
 
-      await logAudit("info", "TRADE_RESOLVED", `Trade ${tradeId} resolved: ${isWin ? "WIN" : "LOSS"}`, {
-        tradeId,
-        outcome: isWin ? "WIN" : "LOSS",
-        exitPrice,
-        pnl,
-        winningOutcome,
-      });
+      await logAudit(
+        "info",
+        "TRADE_RESOLVED",
+        `Trade ${tradeId} resolved: ${isWin ? "WIN" : "LOSS"}`,
+        {
+          tradeId,
+          outcome: isWin ? "WIN" : "LOSS",
+          exitPrice,
+          pnl,
+          winningOutcome,
+        },
+      );
 
       this.openPositions.delete(tradeId);
 
@@ -632,7 +652,10 @@ export class MarketOrchestrator extends EventEmitter {
     }, 5000);
   }
 
-  private async checkStopLoss(tokenId: string, currentMidpoint: number): Promise<void> {
+  private async checkStopLoss(
+    tokenId: string,
+    currentMidpoint: number,
+  ): Promise<void> {
     const config = getConfig();
 
     for (const [tradeId, pos] of this.openPositions) {
@@ -642,7 +665,11 @@ export class MarketOrchestrator extends EventEmitter {
       if (Date.now() < pos.marketEndDate.getTime()) continue;
 
       if (currentMidpoint <= config.stopLoss.threshold) {
-        const pnl = calculateLossAmount(pos.entryPrice, pos.entryShares, pos.fees);
+        const pnl = calculateLossAmount(
+          pos.entryPrice,
+          pos.entryShares,
+          pos.fees,
+        );
 
         await resolveTrade(
           tradeId,
@@ -670,7 +697,11 @@ export class MarketOrchestrator extends EventEmitter {
           "⚠️ Stop-loss triggered",
         );
 
-        this.emit("stopLossTriggered", { tradeId, pnl, exitPrice: currentMidpoint });
+        this.emit("stopLossTriggered", {
+          tradeId,
+          pnl,
+          exitPrice: currentMidpoint,
+        });
       }
     }
   }
@@ -687,14 +718,13 @@ export class MarketOrchestrator extends EventEmitter {
         await this.pollResolution(marketId);
       } catch {
         // If still unresolved, mark as loss (conservative)
-        const pnl = calculateLossAmount(pos.entryPrice, pos.entryShares, pos.fees);
-
-        await resolveTrade(
-          tradeId,
-          "LOSS",
-          pnl.toFixed(6),
-          "0",
+        const pnl = calculateLossAmount(
+          pos.entryPrice,
+          pos.entryShares,
+          pos.fees,
         );
+
+        await resolveTrade(tradeId, "LOSS", pnl.toFixed(6), "0");
 
         this.openPositions.delete(tradeId);
 

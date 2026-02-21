@@ -80,7 +80,7 @@ export const POLY_URLS = {
 export const CRYPTO_FEE = {
   RATE: 0.25,
   EXPONENT: 2,
-  MAKER_REBATE_PERCENT: 0.20,
+  MAKER_REBATE_PERCENT: 0.2,
 } as const;
 
 // ============================================
@@ -97,10 +97,10 @@ export const ConfigSchema = z.object({
   strategy: z.object({
     marketWindow: z.enum(MARKET_WINDOWS),
     tradeFromWindowSeconds: z.number().min(5).max(600),
-    entryPriceThreshold: z.number().min(0.90).max(0.99),
+    entryPriceThreshold: z.number().min(0.9).max(0.99),
     maxSimultaneousPositions: z.number().min(1).max(100),
     resolutionWatchMinutes: z.number().min(1).max(30),
-    minBtcDistancePercent: z.number().min(0).max(5),
+    minBtcDistanceUsd: z.number().min(0).max(100000),
     scanIntervalMs: z.number().min(10000),
   }),
   stopLoss: z.object({

@@ -25,7 +25,7 @@ export interface SimulatedTrade {
   fillStatus: string | null;
   btcPriceAtEntry: string | null;
   btcTargetPrice: string | null;
-  btcDistancePercent: string | null;
+  btcDistanceUsd: string | null;
   exitPrice: string | null;
   exitTs: string | null;
   exitOutcome: string | null;
@@ -70,7 +70,7 @@ export interface SystemStats {
     tradeFromWindowSeconds: number;
     simulationAmountUsd: number;
     maxSimultaneousPositions: number;
-    minBtcDistancePercent: number;
+    minBtcDistanceUsd: number;
     stopLossThreshold: number;
   };
 }

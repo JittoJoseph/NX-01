@@ -94,14 +94,10 @@ export class ApiClient {
   async getPerformance(
     period: "1D" | "1W" | "1M" | "ALL" = "1D",
   ): Promise<PerformanceMetrics> {
-    return fetchWithRetry(
-      `${this.baseUrl}/api/performance?period=${period}`,
-    );
+    return fetchWithRetry(`${this.baseUrl}/api/performance?period=${period}`);
   }
 
-  async getAuditLogs(params?: {
-    limit?: number;
-  }): Promise<AuditLog[]> {
+  async getAuditLogs(params?: { limit?: number }): Promise<AuditLog[]> {
     const searchParams = new URLSearchParams();
     if (params?.limit) searchParams.set("limit", String(params.limit));
 

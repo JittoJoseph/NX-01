@@ -50,7 +50,10 @@ export class PolymarketClient {
     const handleError = (apiName: string) => async (error: AxiosError) => {
       if (error.response?.status === 429) {
         this.requestCounts.errors429++;
-        logger.warn({ api: apiName, url: error.config?.url }, "Rate limited (429)");
+        logger.warn(
+          { api: apiName, url: error.config?.url },
+          "Rate limited (429)",
+        );
         await logAudit("warn", "rate_limit", `Rate limited on ${apiName}`, {
           url: error.config?.url,
           retryAfter: error.response.headers["retry-after"],
@@ -126,7 +129,9 @@ export class PolymarketClient {
   // CLOB API — Orderbook, Pricing, Fees
   // ============================================
 
-  async getOrderbook(tokenId: string): Promise<{ data: Orderbook; raw: unknown }> {
+  async getOrderbook(
+    tokenId: string,
+  ): Promise<{ data: Orderbook; raw: unknown }> {
     return withRetry(
       async () => {
         const response = await this.clobApi.get("/book", {

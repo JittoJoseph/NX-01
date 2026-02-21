@@ -117,7 +117,7 @@ export async function createSimulatedTrade(data: {
   fillStatus?: string;
   btcPriceAtEntry?: number;
   btcTargetPrice?: number;
-  btcDistancePercent?: number;
+  btcDistanceUsd?: number;
   strategyTrigger?: string;
   orderbookSnapshot?: unknown;
   raw?: unknown;
@@ -143,7 +143,7 @@ export async function createSimulatedTrade(data: {
       fillStatus: data.fillStatus ?? "FULL",
       btcPriceAtEntry: data.btcPriceAtEntry?.toString() ?? null,
       btcTargetPrice: data.btcTargetPrice?.toString() ?? null,
-      btcDistancePercent: data.btcDistancePercent?.toString() ?? null,
+      btcDistanceUsd: data.btcDistanceUsd?.toString() ?? null,
       strategyTrigger: data.strategyTrigger || null,
       orderbookSnapshot: data.orderbookSnapshot as any,
       raw: data.raw as any,

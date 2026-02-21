@@ -97,7 +97,11 @@ export class ApiServer {
     return this.app;
   }
 
-  private corsMiddleware(req: Request, res: Response, next: NextFunction): void {
+  private corsMiddleware(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): void {
     res.header("Access-Control-Allow-Origin", "*");
     res.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
     res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
@@ -110,7 +114,9 @@ export class ApiServer {
 
   private setupRoutes(): void {
     // Health / ping
-    this.app.get("/ping", (_req, res) => res.json({ pong: true, ts: Date.now() }));
+    this.app.get("/ping", (_req, res) =>
+      res.json({ pong: true, ts: Date.now() }),
+    );
     this.app.get("/health", (_req, res) => {
       const orchestrator = getMarketOrchestrator();
       const stats = orchestrator.getStats();
@@ -137,7 +143,7 @@ export class ApiServer {
             tradeFromWindowSeconds: config.strategy.tradeFromWindowSeconds,
             simulationAmountUsd: config.simulation.amountUsd,
             maxSimultaneousPositions: config.strategy.maxSimultaneousPositions,
-            minBtcDistancePercent: config.strategy.minBtcDistancePercent,
+            minBtcDistanceUsd: config.strategy.minBtcDistanceUsd,
             stopLossThreshold: config.stopLoss.threshold,
           },
         });
@@ -182,9 +188,10 @@ export class ApiServer {
           .orderBy(desc(schema.simulatedTrades.entryTs))
           .limit(limit);
 
-        const trades = conditions.length > 0
-          ? await query.where(and(...conditions))
-          : await query;
+        const trades =
+          conditions.length > 0
+            ? await query.where(and(...conditions))
+            : await query;
 
         res.json(trades);
       } catch (error) {

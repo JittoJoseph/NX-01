@@ -2,7 +2,10 @@ import { EventEmitter } from "events";
 import WebSocket from "ws";
 import { createModuleLogger } from "../utils/logger.js";
 import { POLY_URLS } from "../types/index.js";
-import type { RTDSMessage, BtcPriceData } from "../interfaces/websocket-types.js";
+import type {
+  RTDSMessage,
+  BtcPriceData,
+} from "../interfaces/websocket-types.js";
 
 const logger = createModuleLogger("btc-price-watcher");
 
@@ -118,7 +121,10 @@ export class BtcPriceWatcher extends EventEmitter {
       });
 
       this.ws.on("close", (code: number, reason: Buffer) => {
-        logger.warn({ code, reason: reason.toString() }, "RTDS WebSocket closed");
+        logger.warn(
+          { code, reason: reason.toString() },
+          "RTDS WebSocket closed",
+        );
         this.cleanup();
         this.scheduleReconnect();
       });
@@ -141,13 +147,19 @@ export class BtcPriceWatcher extends EventEmitter {
 
   private scheduleReconnect(): void {
     if (!this.running) return;
-    const delay = Math.min(
-      BtcPriceWatcher.BASE_RECONNECT_DELAY * Math.pow(2, this.reconnectAttempt),
-      BtcPriceWatcher.MAX_RECONNECT_DELAY,
-    ) + Math.random() * 500;
+    const delay =
+      Math.min(
+        BtcPriceWatcher.BASE_RECONNECT_DELAY *
+          Math.pow(2, this.reconnectAttempt),
+        BtcPriceWatcher.MAX_RECONNECT_DELAY,
+      ) +
+      Math.random() * 500;
 
     this.reconnectAttempt++;
-    logger.info({ delay: Math.round(delay), attempt: this.reconnectAttempt }, "RTDS reconnecting");
+    logger.info(
+      { delay: Math.round(delay), attempt: this.reconnectAttempt },
+      "RTDS reconnecting",
+    );
     this.reconnectTimer = setTimeout(() => this.connect(), delay);
   }
 }

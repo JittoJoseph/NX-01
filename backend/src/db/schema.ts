@@ -62,7 +62,10 @@ export const simulatedTrades = pgTable(
     entryTs: timestamp("entry_ts").notNull(),
     entryPrice: decimal("entry_price", { precision: 18, scale: 8 }).notNull(),
     entryShares: decimal("entry_shares", { precision: 18, scale: 8 }).notNull(),
-    simulatedUsdAmount: decimal("simulated_usd_amount", { precision: 18, scale: 8 })
+    simulatedUsdAmount: decimal("simulated_usd_amount", {
+      precision: 18,
+      scale: 8,
+    })
       .default("1")
       .notNull(),
     entryFees: decimal("entry_fees", { precision: 18, scale: 8 }).default("0"),
@@ -71,7 +74,10 @@ export const simulatedTrades = pgTable(
     // BTC context at entry
     btcPriceAtEntry: decimal("btc_price_at_entry", { precision: 18, scale: 2 }),
     btcTargetPrice: decimal("btc_target_price", { precision: 18, scale: 2 }),
-    btcDistancePercent: decimal("btc_distance_percent", { precision: 10, scale: 4 }),
+    btcDistanceUsd: decimal("btc_distance_usd", {
+      precision: 10,
+      scale: 4,
+    }),
     // Exit / resolution
     exitPrice: decimal("exit_price", { precision: 18, scale: 8 }),
     exitTs: timestamp("exit_ts"),
@@ -109,8 +115,13 @@ export const experimentRuns = pgTable(
     startedAt: timestamp("started_at").defaultNow().notNull(),
     endedAt: timestamp("ended_at"),
     status: text("status").default("RUNNING").notNull(),
-    totalTrades: decimal("total_trades", { precision: 18, scale: 0 }).default("0"),
-    successfulTrades: decimal("successful_trades", { precision: 18, scale: 0 }).default("0"),
+    totalTrades: decimal("total_trades", { precision: 18, scale: 0 }).default(
+      "0",
+    ),
+    successfulTrades: decimal("successful_trades", {
+      precision: 18,
+      scale: 0,
+    }).default("0"),
     avgRealizedPnl: decimal("avg_realized_pnl", { precision: 18, scale: 8 }),
     metadata: jsonb("metadata"),
     createdAt: timestamp("created_at").defaultNow().notNull(),

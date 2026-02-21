@@ -1,7 +1,11 @@
 import { EventEmitter } from "events";
 import { createModuleLogger } from "../utils/logger.js";
 import { getConfig } from "../utils/config.js";
-import { WINDOW_CONFIGS, type GammaEvent, type GammaMarket } from "../types/index.js";
+import {
+  WINDOW_CONFIGS,
+  type GammaEvent,
+  type GammaMarket,
+} from "../types/index.js";
 import { getPolymarketClient, PolymarketClient } from "./polymarket-client.js";
 import { upsertMarket } from "../db/client.js";
 
@@ -118,7 +122,9 @@ export class MarketScanner extends EventEmitter {
     // Also check if "btc" appears in slug/title as fallback
     const title = event.title?.toLowerCase() ?? "";
     const hasbtc =
-      slug.includes("btc") || title.includes("btc") || title.includes("bitcoin");
+      slug.includes("btc") ||
+      title.includes("btc") ||
+      title.includes("bitcoin");
     const hasWindow =
       slug.includes(windowConfig.slugPrefix) ||
       seriesSlug.includes(windowConfig.seriesSlug);

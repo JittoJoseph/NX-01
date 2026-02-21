@@ -1,5 +1,5 @@
 {
-  "id": "8b3a5d77-8ddd-4db5-9445-5b704b43a428",
+  "id": "fdb615d1-cebb-4f7b-9efc-dcbcf6613841",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -512,8 +512,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "btc_distance_percent": {
-          "name": "btc_distance_percent",
+        "btc_distance_usd": {
+          "name": "btc_distance_usd",
           "type": "numeric(10, 4)",
           "primaryKey": false,
           "notNull": false

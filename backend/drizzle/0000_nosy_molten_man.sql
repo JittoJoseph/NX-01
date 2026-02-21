@@ -60,7 +60,7 @@ CREATE TABLE "simulated_trades" (
 	"fill_status" text DEFAULT 'FULL',
 	"btc_price_at_entry" numeric(18, 2),
 	"btc_target_price" numeric(18, 2),
-	"btc_distance_percent" numeric(10, 4),
+	"btc_distance_usd" numeric(10, 4),
 	"exit_price" numeric(18, 8),
 	"exit_ts" timestamp,
 	"exit_outcome" text,

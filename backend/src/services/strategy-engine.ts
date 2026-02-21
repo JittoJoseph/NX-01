@@ -16,7 +16,7 @@ export interface MarketOpportunity {
   bestBid: number;
   btcPrice: number;
   btcTargetPrice: number;
-  btcDistancePercent: number;
+  btcDistanceUsd: number;
   secondsToEnd: number;
   askDepthUsd: number; // liquidity available at/near threshold
   trigger: string;
@@ -48,7 +48,7 @@ interface WatchedMarket {
  * Entry conditions (ALL must be true):
  *   1. Within last TRADE_FROM_WINDOW_SECONDS of market end
  *   2. Token midpoint ≥ ENTRY_PRICE_THRESHOLD (e.g., 0.97)
- *   3. BTC price distance from target ≥ MIN_BTC_DISTANCE_PERCENT
+ *   3. BTC price distance from target ≥ MIN_BTC_DISTANCE_USD
  *   4. Position limit not reached
  *   5. Not already holding this market/token
  *
@@ -135,7 +135,10 @@ export class StrategyEngine extends EventEmitter {
     const secondsToEnd = (endTime - now) / 1000;
 
     // Condition 1: Must be in the trade window (last N seconds before market end)
-    if (secondsToEnd < 0 || secondsToEnd > config.strategy.tradeFromWindowSeconds) {
+    if (
+      secondsToEnd < 0 ||
+      secondsToEnd > config.strategy.tradeFromWindowSeconds
+    ) {
       return;
     }
 
@@ -151,18 +154,24 @@ export class StrategyEngine extends EventEmitter {
     }
 
     if (market.targetPrice === null) {
-      logger.debug({ tokenId }, "No target price parsed for market, skipping distance check");
+      logger.debug(
+        { tokenId },
+        "No target price parsed for market, skipping distance check",
+      );
       // Allow trade without distance check if we can't parse target
     } else {
-      const btcDistancePercent = this.calculateBtcDistance(
+      const btcDistanceUsd = this.calculateBtcDistanceUsd(
         btcPriceData.price,
         market.targetPrice,
-        market.outcomeLabel,
       );
 
-      if (Math.abs(btcDistancePercent) < config.strategy.minBtcDistancePercent) {
+      if (btcDistanceUsd < config.strategy.minBtcDistanceUsd) {
         logger.debug(
-          { tokenId, btcDistancePercent, minRequired: config.strategy.minBtcDistancePercent },
+          {
+            tokenId,
+            btcDistanceUsd,
+            minRequired: config.strategy.minBtcDistanceUsd,
+          },
           "BTC distance too small, skipping (too volatile)",
         );
         return;
@@ -186,8 +195,8 @@ export class StrategyEngine extends EventEmitter {
       }
     }
 
-    const btcDistancePercent = market.targetPrice
-      ? this.calculateBtcDistance(btcPriceData.price, market.targetPrice, market.outcomeLabel)
+    const btcDistanceUsd = market.targetPrice
+      ? this.calculateBtcDistanceUsd(btcPriceData.price, market.targetPrice)
       : 0;
 
     const opportunity: MarketOpportunity = {
@@ -199,7 +208,7 @@ export class StrategyEngine extends EventEmitter {
       bestBid,
       btcPrice: btcPriceData.price,
       btcTargetPrice: market.targetPrice ?? 0,
-      btcDistancePercent,
+      btcDistanceUsd,
       secondsToEnd,
       askDepthUsd,
       trigger: "end_of_window_micro_profit",
@@ -216,7 +225,7 @@ export class StrategyEngine extends EventEmitter {
         midpoint: midpoint.toFixed(4),
         bestAsk: bestAsk.toFixed(4),
         btcPrice: btcPriceData.price.toFixed(2),
-        btcDistance: btcDistancePercent.toFixed(3),
+        btcDistance: btcDistanceUsd.toFixed(2),
         secondsToEnd: secondsToEnd.toFixed(1),
       },
       "🎯 Opportunity detected: end-of-window micro-profit",
@@ -230,14 +239,12 @@ export class StrategyEngine extends EventEmitter {
    * For "Up" outcomes: positive distance means BTC is above target (good for Up buyers)
    * For "Down" outcomes: positive distance means BTC is below target (good for Down buyers)
    */
-  private calculateBtcDistance(
+  private calculateBtcDistanceUsd(
     currentBtcPrice: number,
     targetPrice: number,
-    outcomeLabel: string,
   ): number {
-    const distance = ((currentBtcPrice - targetPrice) / targetPrice) * 100;
-    // For Up, positive distance = good. For Down, negative distance = good.
-    return outcomeLabel.toLowerCase() === "up" ? distance : -distance;
+    // Absolute dollar distance between current BTC price and market target price
+    return Math.abs(currentBtcPrice - targetPrice);
   }
 
   getPriceState(tokenId: string): TokenPriceState | undefined {
