@@ -29,19 +29,12 @@ export function SystemStatusIndicator({
         </div>
         {stats && (
           <div className="flex items-center gap-4">
-            <span>TRADES: {stats.database.totalTrades}</span>
-            <span>MARKETS: {stats.database.activeMarkets}</span>
-            <span>UPTIME: {formatUptime(stats.uptimeSeconds)}</span>
+            <span>POSITIONS: {stats.orchestrator.openPositions}</span>
+            <span>MARKETS: {stats.orchestrator.activeMarkets}</span>
+            <span>CYCLES: {stats.orchestrator.cycleCount}</span>
           </div>
         )}
       </div>
     </div>
   );
-}
-
-function formatUptime(seconds: number): string {
-  const hours = Math.floor(seconds / 3600);
-  const mins = Math.floor((seconds % 3600) / 60);
-  if (hours > 0) return `${hours}h ${mins}m`;
-  return `${mins}m`;
 }

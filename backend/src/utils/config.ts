@@ -1,10 +1,9 @@
 import { Config, ConfigSchema } from "../types/index.js";
 import dotenv from "dotenv";
 
-// Load .env file
 dotenv.config();
 
-function getEnvVar(key: string, defaultValue?: string): string {
+function env(key: string, defaultValue?: string): string {
   const value = process.env[key] ?? defaultValue;
   if (value === undefined) {
     throw new Error(`Missing required environment variable: ${key}`);
@@ -12,10 +11,10 @@ function getEnvVar(key: string, defaultValue?: string): string {
   return value;
 }
 
-function getEnvNumber(key: string, defaultValue: number): number {
+function envNum(key: string, defaultValue: number): number {
   const value = process.env[key];
   if (value === undefined) return defaultValue;
-  const parsed = parseInt(value, 10);
+  const parsed = parseFloat(value);
   if (isNaN(parsed)) {
     throw new Error(`Invalid number for environment variable: ${key}`);
   }
@@ -24,56 +23,40 @@ function getEnvNumber(key: string, defaultValue: number): number {
 
 export function loadConfig(): Config {
   const rawConfig = {
-    poly: {
-      gammaApiBase: getEnvVar(
-        "POLY_GAMMA_API_BASE",
-        "https://gamma-api.polymarket.com",
-      ),
-      clobBase: getEnvVar("POLY_CLOB_BASE", "https://clob.polymarket.com"),
-      clobWs: getEnvVar(
-        "POLY_CLOB_WS",
-        "wss://ws-subscriptions-clob.polymarket.com/ws/",
-      ),
-    },
     db: {
-      url: getEnvVar("SUPABASE_DATABASE_URL"),
+      url: env("SUPABASE_DATABASE_URL"),
     },
     simulation: {
-      amountUsd: getEnvNumber("SIMULATION_AMOUNT_USD", 1),
-      entryThreshold: parseFloat(getEnvVar("STRATEGY_ENTRY_THRESHOLD", "0.75")),
-      entryThresholdMax: parseFloat(
-        getEnvVar("STRATEGY_ENTRY_THRESHOLD_MAX", "0.80"),
-      ),
-      claimDelayMs: getEnvNumber("CLAIM_DELAY_MS", 300000), // 5 minutes default
+      amountUsd: envNum("SIMULATION_AMOUNT_USD", 1),
     },
     strategy: {
-      maxSimultaneousPositions: getEnvNumber("MAX_SIMULTANEOUS_POSITIONS", 20),
-      nearEndWindowSeconds: getEnvNumber("NEAR_END_WINDOW_SECONDS", 60),
-      scanIntervalMs: getEnvNumber("SCAN_INTERVAL_MS", 120000), // 2 min
-      minLookAheadMs: getEnvNumber("MIN_LOOK_AHEAD_MS", 7200000), // 2 hours
+      marketWindow: env("MARKET_WINDOW", "5M"),
+      tradeFromWindowSeconds: envNum("TRADE_FROM_WINDOW_SECONDS", 30),
+      entryPriceThreshold: envNum("ENTRY_PRICE_THRESHOLD", 0.97),
+      maxSimultaneousPositions: envNum("MAX_SIMULTANEOUS_POSITIONS", 5),
+      resolutionWatchMinutes: envNum("RESOLUTION_WATCH_MINUTES", 5),
+      minBtcDistancePercent: envNum("MIN_BTC_DISTANCE_PERCENT", 0.1),
+      scanIntervalMs: envNum("SCAN_INTERVAL_MS", 60000),
     },
     stopLoss: {
-      enabled: process.env.STOP_LOSS_ENABLED !== "false", // Default: enabled
-      threshold: parseFloat(process.env.STOP_LOSS_THRESHOLD ?? "0.50"), // Exit if price drops to 50¢
+      threshold: envNum("STOP_LOSS_THRESHOLD", 0.50),
     },
     wipe: {
-      password: getEnvVar("WIPE_PASSWORD"),
+      password: env("WIPE_PASSWORD"),
     },
     server: {
-      port: getEnvNumber("PORT", 4000),
-      host: getEnvVar("HOST", "0.0.0.0"),
+      port: envNum("PORT", 4000),
+      host: env("HOST", "0.0.0.0"),
     },
     logging: {
-      level: getEnvVar("LOG_LEVEL", "info") as Config["logging"]["level"],
+      level: env("LOG_LEVEL", "info"),
     },
-    env: getEnvVar("NODE_ENV", "development") as Config["env"],
+    env: env("NODE_ENV", "development"),
   };
 
-  // Validate config
   return ConfigSchema.parse(rawConfig);
 }
 
-// Singleton config instance
 let configInstance: Config | null = null;
 
 export function getConfig(): Config {

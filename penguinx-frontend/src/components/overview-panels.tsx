@@ -11,10 +11,10 @@ export function OverviewPanels() {
 
   const periods: Array<"1D" | "1W" | "1M" | "ALL"> = ["1D", "1W", "1M", "ALL"];
 
-  const netPnl = parseFloat(performance?.summary.netPnl || "0");
-  const roi = parseFloat(performance?.summary.roi || "0");
-  const winRate = parseFloat(performance?.trades.winRate || "0");
-  const totalFees = parseFloat(performance?.summary.totalFees || "0");
+  const netPnl = parseFloat(performance?.totalPnl || "0");
+  const roi = parseFloat(performance?.roi || "0");
+  const winRate = parseFloat(performance?.winRate || "0");
+  const totalFees = parseFloat(performance?.totalFees || "0");
   const direction: Direction =
     netPnl > 0.0001 ? "up" : netPnl < -0.0001 ? "down" : "flat";
 
@@ -87,7 +87,7 @@ export function OverviewPanels() {
             label="TRADES"
             value={
               performance
-                ? `${performance.trades.wins}W / ${performance.trades.losses}L`
+                ? `${performance.wins}W / ${performance.losses}L`
                 : "—"
             }
             className="text-foreground"

@@ -1,18 +1,16 @@
 /**
- * API client for the PenguinX BTC 15-minute claim simulation backend.
+ * API client for the PenguinX BTC end-of-window micro-profit simulation backend.
  */
 
 import type {
-  TradesResponse,
+  SimulatedTrade,
   SystemStats,
-  MarketsResponse,
-  TriggersResponse,
-  ExperimentsResponse,
+  DiscoveredMarket,
+  ExperimentRun,
   PerformanceMetrics,
-  AuditResponse,
+  AuditLog,
   HealthResponse,
   WsMessage,
-  ActiveMarket,
 } from "./types";
 
 const API_BASE_URL =
@@ -65,11 +63,11 @@ export class ApiClient {
     return fetchWithRetry(`${this.baseUrl}/health`);
   }
 
-  async ping(): Promise<{ message: string }> {
+  async ping(): Promise<{ pong: boolean; ts: number }> {
     return fetchWithRetry(`${this.baseUrl}/ping`);
   }
 
-  async getActiveMarket(): Promise<ActiveMarket | null> {
+  async getActiveMarkets(): Promise<DiscoveredMarket[]> {
     return fetchWithRetry(`${this.baseUrl}/api/active-market`);
   }
 
@@ -80,72 +78,31 @@ export class ApiClient {
   async getTrades(params?: {
     status?: string;
     limit?: number;
-    offset?: number;
-    experimentId?: string;
-  }): Promise<TradesResponse> {
+  }): Promise<SimulatedTrade[]> {
     const searchParams = new URLSearchParams();
     if (params?.status) searchParams.set("status", params.status);
     if (params?.limit) searchParams.set("limit", String(params.limit));
-    if (params?.offset) searchParams.set("offset", String(params.offset));
-    if (params?.experimentId)
-      searchParams.set("experimentId", params.experimentId);
 
     const qs = searchParams.toString();
     return fetchWithRetry(`${this.baseUrl}/api/trades${qs ? `?${qs}` : ""}`);
   }
 
-  async getMarkets(params?: { active?: boolean }): Promise<MarketsResponse> {
-    const searchParams = new URLSearchParams();
-    if (params?.active !== undefined)
-      searchParams.set("active", String(params.active));
-
-    const qs = searchParams.toString();
-    return fetchWithRetry(`${this.baseUrl}/api/markets${qs ? `?${qs}` : ""}`);
-  }
-
-  async getTriggers(params?: {
-    limit?: number;
-    executed?: boolean;
-  }): Promise<TriggersResponse> {
-    const searchParams = new URLSearchParams();
-    if (params?.limit) searchParams.set("limit", String(params.limit));
-    if (params?.executed !== undefined)
-      searchParams.set("executed", String(params.executed));
-
-    const qs = searchParams.toString();
-    return fetchWithRetry(`${this.baseUrl}/api/triggers${qs ? `?${qs}` : ""}`);
-  }
-
-  async getExperiments(params?: {
-    status?: string;
-  }): Promise<ExperimentsResponse> {
-    const searchParams = new URLSearchParams();
-    if (params?.status) searchParams.set("status", params.status);
-
-    const qs = searchParams.toString();
-    return fetchWithRetry(
-      `${this.baseUrl}/api/experiments${qs ? `?${qs}` : ""}`,
-    );
+  async getExperiments(): Promise<ExperimentRun[]> {
+    return fetchWithRetry(`${this.baseUrl}/api/experiments`);
   }
 
   async getPerformance(
     period: "1D" | "1W" | "1M" | "ALL" = "1D",
   ): Promise<PerformanceMetrics> {
-    const searchParams = new URLSearchParams();
-    searchParams.set("period", period);
     return fetchWithRetry(
-      `${this.baseUrl}/api/performance?${searchParams.toString()}`,
+      `${this.baseUrl}/api/performance?period=${period}`,
     );
   }
 
   async getAuditLogs(params?: {
-    level?: string;
-    category?: string;
     limit?: number;
-  }): Promise<AuditResponse> {
+  }): Promise<AuditLog[]> {
     const searchParams = new URLSearchParams();
-    if (params?.level) searchParams.set("level", params.level);
-    if (params?.category) searchParams.set("category", params.category);
     if (params?.limit) searchParams.set("limit", String(params.limit));
 
     const qs = searchParams.toString();
@@ -154,7 +111,7 @@ export class ApiClient {
 }
 
 /**
- * WebSocket client for real-time updates.
+ * WebSocket client for real-time updates from the backend.
  */
 export class WsClient {
   private ws: WebSocket | null = null;
@@ -164,10 +121,9 @@ export class WsClient {
   private reconnectDelay = 1000;
   private listeners: Map<string, Set<(data: WsMessage) => void>> = new Map();
   private isConnecting = false;
-  private heartbeatInterval: NodeJS.Timeout | null = null;
 
   constructor(wsUrl: string = WS_BASE_URL) {
-    this.wsUrl = `${wsUrl}/ws/simulated`;
+    this.wsUrl = `${wsUrl}/ws`;
   }
 
   connect(): void {
@@ -180,7 +136,6 @@ export class WsClient {
       this.ws.onopen = () => {
         this.reconnectAttempts = 0;
         this.isConnecting = false;
-        this.startHeartbeat();
       };
 
       this.ws.onmessage = (event) => {
@@ -195,7 +150,6 @@ export class WsClient {
 
       this.ws.onclose = () => {
         this.isConnecting = false;
-        this.stopHeartbeat();
         this.attemptReconnect();
       };
 
@@ -209,7 +163,6 @@ export class WsClient {
   }
 
   disconnect(): void {
-    this.stopHeartbeat();
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -240,22 +193,6 @@ export class WsClient {
     this.reconnectAttempts++;
     const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
     setTimeout(() => this.connect(), delay);
-  }
-
-  private startHeartbeat(): void {
-    this.stopHeartbeat();
-    this.heartbeatInterval = setInterval(() => {
-      if (this.ws?.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({ type: "ping" }));
-      }
-    }, 30000);
-  }
-
-  private stopHeartbeat(): void {
-    if (this.heartbeatInterval) {
-      clearInterval(this.heartbeatInterval);
-      this.heartbeatInterval = null;
-    }
   }
 }
 

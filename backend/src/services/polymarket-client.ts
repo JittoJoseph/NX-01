@@ -1,18 +1,18 @@
 import axios, { AxiosInstance, AxiosError } from "axios";
-import { getConfig } from "../utils/config.js";
 import { createModuleLogger } from "../utils/logger.js";
 import { withRetry, isRateLimitError } from "../utils/retry.js";
 import {
-  GammaMarket,
+  POLY_URLS,
   GammaMarketSchema,
-  GammaEvent,
   GammaEventSchema,
-  Orderbook,
   OrderbookSchema,
-  PriceResponse,
-  PriceResponseSchema,
-  MidpointResponse,
   MidpointResponseSchema,
+  FeeRateResponseSchema,
+  type GammaMarket,
+  type GammaEvent,
+  type Orderbook,
+  type MidpointResponse,
+  type FeeRateResponse,
 } from "../types/index.js";
 import { z } from "zod";
 import { logAudit } from "../db/client.js";
@@ -20,50 +20,27 @@ import { logAudit } from "../db/client.js";
 const logger = createModuleLogger("polymarket-client");
 
 /**
- * Polymarket API client — BTC 15-minute markets only.
+ * Polymarket API client for BTC window markets.
  *
- * APIs used:
- *  1. Gamma API — market discovery & metadata
- *     Docs: https://docs.polymarket.com/developers/gamma-markets-api/overview
- *     Rate limit: 300 req / 10s (markets), 500 req / 10s (events)
- *
- *  2. CLOB API — orderbook, price, midpoint
- *     Docs: https://docs.polymarket.com/developers/CLOB/introduction
- *     Rate limit: 1500 req / 10s (book/price/midpoint)
- *
- *  3. CLOB WebSocket — real-time orderbook + price ticks (handled by market-ws-watcher)
- *     Docs: https://docs.polymarket.com/developers/CLOB/websocket/wss-overview
+ * Gamma API — market discovery (https://gamma-api.polymarket.com)
+ * CLOB API — orderbook, price, midpoint, fee rates (https://clob.polymarket.com)
  */
 export class PolymarketClient {
   private gammaApi: AxiosInstance;
   private clobApi: AxiosInstance;
-  private requestCounts = {
-    gammaApi: 0,
-    clobApi: 0,
-    errors429: 0,
-  };
+  private requestCounts = { gammaApi: 0, clobApi: 0, errors429: 0 };
 
   constructor() {
-    const config = getConfig();
-
-    // Gamma API client
     this.gammaApi = axios.create({
-      baseURL: config.poly.gammaApiBase,
+      baseURL: POLY_URLS.GAMMA_API_BASE,
       timeout: 30000,
-      headers: {
-        Accept: "application/json",
-        "User-Agent": "PenguinX/2.0",
-      },
+      headers: { Accept: "application/json", "User-Agent": "PenguinX/3.0" },
     });
 
-    // CLOB API client
     this.clobApi = axios.create({
-      baseURL: config.poly.clobBase,
+      baseURL: POLY_URLS.CLOB_BASE,
       timeout: 30000,
-      headers: {
-        Accept: "application/json",
-        "User-Agent": "PenguinX/2.0",
-      },
+      headers: { Accept: "application/json", "User-Agent": "PenguinX/3.0" },
     });
 
     this.setupInterceptors();
@@ -73,10 +50,7 @@ export class PolymarketClient {
     const handleError = (apiName: string) => async (error: AxiosError) => {
       if (error.response?.status === 429) {
         this.requestCounts.errors429++;
-        logger.warn(
-          { api: apiName, url: error.config?.url },
-          "Rate limited (429)",
-        );
+        logger.warn({ api: apiName, url: error.config?.url }, "Rate limited (429)");
         await logAudit("warn", "rate_limit", `Rate limited on ${apiName}`, {
           url: error.config?.url,
           retryAfter: error.response.headers["retry-after"],
@@ -102,15 +76,8 @@ export class PolymarketClient {
 
   // ============================================
   // Gamma API — Market Discovery
-  // Docs: https://docs.polymarket.com/developers/gamma-markets-api/get-markets
   // ============================================
 
-  /**
-   * Get events with filtering.
-   * Per docs: GET /events?active=true&closed=false&limit=N
-   * Used to discover BTC 15M events (tag_slug=15M).
-   * Rate limit: 500 requests / 10s
-   */
   async getEvents(
     options: {
       limit?: number;
@@ -127,7 +94,6 @@ export class PolymarketClient {
           limit: options.limit ?? 50,
           offset: options.offset ?? 0,
         };
-
         if (options.closed !== undefined) params.closed = options.closed;
         if (options.active !== undefined) params.active = options.active;
         if (options.tag_slug) params.tag_slug = options.tag_slug;
@@ -135,97 +101,45 @@ export class PolymarketClient {
 
         logger.debug({ params }, "Fetching events from Gamma API");
         const response = await this.gammaApi.get("/events", { params });
-
         const events = z.array(GammaEventSchema).parse(response.data);
         logger.debug({ count: events.length }, "Fetched events");
         return events;
       },
-      {
-        maxRetries: 3,
-        retryOn: isRateLimitError,
-      },
+      { maxRetries: 3, retryOn: isRateLimitError },
     );
   }
 
-  /**
-   * Get market by ID.
-   * Per docs: GET /markets?id={id}
-   */
   async getMarketById(marketId: string): Promise<GammaMarket | null> {
     return withRetry(
       async () => {
         const response = await this.gammaApi.get("/markets", {
           params: { id: marketId },
         });
-
         const markets = z.array(GammaMarketSchema).parse(response.data);
         return markets[0] ?? null;
       },
-      {
-        maxRetries: 3,
-        retryOn: isRateLimitError,
-      },
+      { maxRetries: 3, retryOn: isRateLimitError },
     );
   }
 
   // ============================================
-  // CLOB API — Orderbook & Pricing
-  // Docs: https://docs.polymarket.com/api-reference/orderbook/get-order-book-summary
+  // CLOB API — Orderbook, Pricing, Fees
   // ============================================
 
-  /**
-   * Get orderbook for a token.
-   * Per docs: GET /book?token_id={token_id}
-   * Rate limit: 1500 requests / 10s
-   */
-  async getOrderbook(
-    tokenId: string,
-  ): Promise<{ data: Orderbook; raw: unknown }> {
+  async getOrderbook(tokenId: string): Promise<{ data: Orderbook; raw: unknown }> {
     return withRetry(
       async () => {
         const response = await this.clobApi.get("/book", {
           params: { token_id: tokenId },
         });
-
         const raw = response.data;
         const data = OrderbookSchema.parse(raw);
         return { data, raw };
       },
-      {
-        maxRetries: 3,
-        retryOn: isRateLimitError,
-      },
+      { maxRetries: 3, retryOn: isRateLimitError },
     );
   }
 
-  /**
-   * Get price for a token.
-   * Per docs: GET /price?token_id={token_id}&side={side}
-   * Rate limit: 1500 requests / 10s
-   */
-  async getPrice(
-    tokenId: string,
-    side: "BUY" | "SELL",
-  ): Promise<PriceResponse> {
-    return withRetry(
-      async () => {
-        const response = await this.clobApi.get("/price", {
-          params: { token_id: tokenId, side },
-        });
-        return PriceResponseSchema.parse(response.data);
-      },
-      {
-        maxRetries: 3,
-        retryOn: isRateLimitError,
-      },
-    );
-  }
-
-  /**
-   * Get midpoint price for a token.
-   * Per docs: GET /midpoint?token_id={token_id}
-   * Rate limit: 1500 requests / 10s
-   */
   async getMidpoint(tokenId: string): Promise<MidpointResponse> {
     return withRetry(
       async () => {
@@ -234,10 +148,25 @@ export class PolymarketClient {
         });
         return MidpointResponseSchema.parse(response.data);
       },
-      {
-        maxRetries: 3,
-        retryOn: isRateLimitError,
+      { maxRetries: 3, retryOn: isRateLimitError },
+    );
+  }
+
+  /**
+   * Get the fee rate for a token.
+   * Per docs: GET /fee-rate?token_id={token_id}
+   * Returns fee_rate_bps as string. For crypto 5M/15M markets this is non-zero.
+   */
+  async getFeeRate(tokenId: string): Promise<number> {
+    return withRetry(
+      async () => {
+        const response = await this.clobApi.get("/fee-rate", {
+          params: { token_id: tokenId },
+        });
+        const parsed = FeeRateResponseSchema.parse(response.data);
+        return parseInt(parsed.fee_rate_bps, 10) || 0;
       },
+      { maxRetries: 3, retryOn: isRateLimitError },
     );
   }
 
@@ -245,10 +174,6 @@ export class PolymarketClient {
   // Helpers
   // ============================================
 
-  /**
-   * Parse clobTokenIds from Gamma market response.
-   * The field is a JSON string like '["123456","789012"]'.
-   */
   static parseClobTokenIds(market: GammaMarket): string[] {
     if (!market.clobTokenIds) return [];
     try {
@@ -259,10 +184,6 @@ export class PolymarketClient {
     }
   }
 
-  /**
-   * Parse outcomes from Gamma market response.
-   * The field is a JSON string like '["Up","Down"]'.
-   */
   static parseOutcomes(market: GammaMarket): string[] {
     if (!market.outcomes) return [];
     try {
@@ -273,9 +194,6 @@ export class PolymarketClient {
     }
   }
 
-  /**
-   * Parse outcomePrices from Gamma market response.
-   */
   static parseOutcomePrices(market: GammaMarket): number[] {
     if (!market.outcomePrices) return [];
     try {
@@ -285,14 +203,28 @@ export class PolymarketClient {
       return [];
     }
   }
+
+  /**
+   * Parse the BTC target price from the market question text.
+   * Example questions:
+   *   "Will BTC be above $97,450.00 at 2026-02-21 15:05 UTC?"
+   *   "Will Bitcoin price be above $98,200 at ..."
+   * Returns null if not parseable.
+   */
+  static parseTargetPrice(question: string | null | undefined): number | null {
+    if (!question) return null;
+    // Match dollar amounts with optional commas and decimals
+    const match = question.match(/(?:above|below)\s*\$([0-9,]+(?:\.\d+)?)/i);
+    if (!match) return null;
+    const priceStr = match[1]!.replace(/,/g, "");
+    const price = parseFloat(priceStr);
+    return isNaN(price) ? null : price;
+  }
 }
 
-// Singleton instance
+// Singleton
 let clientInstance: PolymarketClient | null = null;
-
 export function getPolymarketClient(): PolymarketClient {
-  if (!clientInstance) {
-    clientInstance = new PolymarketClient();
-  }
+  if (!clientInstance) clientInstance = new PolymarketClient();
   return clientInstance;
 }

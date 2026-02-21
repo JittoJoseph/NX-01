@@ -1,6 +1,7 @@
 "use client";
 
 import type { SimulatedTrade } from "@/lib/types";
+import { MARKET_WINDOW_LABELS, type MarketWindow } from "@/lib/types";
 import {
   Dialog,
   DialogContent,
@@ -14,61 +15,55 @@ interface TradeDetailPopupProps {
   onClose: () => void;
 }
 
-export function TradeDetailPopup({
-  trade,
-  open,
-  onClose,
-}: TradeDetailPopupProps) {
+export function TradeDetailPopup({ trade, open, onClose }: TradeDetailPopupProps) {
   if (!trade) return null;
 
   const isClosed = trade.status === "CLOSED";
   const entryPrice = parseFloat(trade.entryPrice);
   const entryFees = parseFloat(trade.entryFees || "0");
-  const entrySlippage = parseFloat(trade.entrySlippage || "0");
   const pnl = parseFloat(trade.realizedPnl || "0");
-  const exitPrice = trade.claimPrice ? parseFloat(trade.claimPrice) : null;
+  const exitPrice = trade.exitPrice ? parseFloat(trade.exitPrice) : null;
+  const btcAtEntry = trade.btcPriceAtEntry ? parseFloat(trade.btcPriceAtEntry) : null;
+  const btcTarget = trade.btcTargetPrice ? parseFloat(trade.btcTargetPrice) : null;
+  const btcDist = trade.btcDistancePercent ? parseFloat(trade.btcDistancePercent) : null;
+  const windowLabel = trade.windowType
+    ? MARKET_WINDOW_LABELS[trade.windowType as MarketWindow] ?? trade.windowType
+    : "—";
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
       <DialogContent className="max-w-lg font-mono bg-background border-border">
         <DialogHeader>
-          <DialogTitle className="text-sm font-bold tracking-wider">
-            TRADE DETAIL
-          </DialogTitle>
+          <DialogTitle className="text-sm font-bold tracking-wider">TRADE DETAIL</DialogTitle>
         </DialogHeader>
 
         <div className="space-y-4 text-xs">
           {/* Market info */}
           <Section title="MARKET">
-            <Row label="Question" value={trade.market?.question || "—"} wide />
-            <Row
-              label="Token ID"
-              value={trade.tokenId ? trade.tokenId.slice(0, 20) + "…" : "—"}
-            />
-            <Row
-              label="Market ID"
-              value={trade.marketId ? trade.marketId.slice(0, 20) + "…" : "—"}
-            />
-            <Row
-              label="Outcome"
-              value={trade.outcomeLabel || trade.market?.outcome || "—"}
-            />
-            {trade.experimentId && (
-              <Row label="Experiment" value={trade.experimentId.toString()} />
-            )}
+            <Row label="Window Type" value={windowLabel} />
+            <Row label="Token ID" value={trade.tokenId ? trade.tokenId.slice(0, 20) + "…" : "—"} />
+            <Row label="Market ID" value={trade.marketId ? trade.marketId.slice(0, 20) + "…" : "—"} />
+            <Row label="Outcome" value={trade.outcomeLabel || "—"} />
+            <Row label="Order Type" value={trade.orderType || "—"} />
+            {trade.experimentId && <Row label="Experiment" value={trade.experimentId} />}
           </Section>
 
           {/* Pricing */}
           <Section title="PRICING">
             <Row label="Entry Price" value={`$${entryPrice.toFixed(6)}`} />
-            <Row
-              label="Shares"
-              value={parseFloat(trade.entryShares).toFixed(4)}
-            />
-            <Row
-              label="USD Amount"
-              value={`$${parseFloat(trade.simulatedUsdAmount).toFixed(4)}`}
-            />
+            <Row label="Shares" value={parseFloat(trade.entryShares).toFixed(4)} />
+            <Row label="USD Amount" value={`$${parseFloat(trade.simulatedUsdAmount).toFixed(4)}`} />
+            <Row label="Entry Fees" value={`$${entryFees.toFixed(6)}`} />
+            {trade.feeRateBps != null && (
+              <Row label="Fee Rate" value={`${trade.feeRateBps} bps`} />
+            )}
+          </Section>
+
+          {/* BTC Context */}
+          <Section title="BTC CONTEXT">
+            <Row label="BTC at Entry" value={btcAtEntry ? `$${btcAtEntry.toLocaleString()}` : "—"} />
+            <Row label="BTC Target" value={btcTarget ? `$${btcTarget.toLocaleString()}` : "—"} />
+            <Row label="Distance" value={btcDist !== null ? `${btcDist.toFixed(3)}%` : "—"} />
           </Section>
 
           {/* Result info */}
@@ -79,35 +74,33 @@ export function TradeDetailPopup({
                 <span
                   className={
                     isClosed
-                      ? pnl >= 0
-                        ? "text-emerald-500"
-                        : "text-red-500"
+                      ? pnl >= 0 ? "text-emerald-500" : "text-red-500"
                       : "text-blue-500"
                   }
                 >
-                  {isClosed ? "CLOSED" : "ACTIVE"}
+                  {isClosed ? "CLOSED" : "OPEN"}
                 </span>
               }
             />
-            {trade.claimOutcome && (
+            {trade.exitOutcome && (
               <Row
                 label="Outcome"
                 value={
                   <span
                     className={
-                      trade.claimOutcome === "WIN"
+                      trade.exitOutcome === "WIN"
                         ? "text-emerald-500"
-                        : "text-red-500"
+                        : trade.exitOutcome === "STOP_LOSS"
+                          ? "text-amber-500"
+                          : "text-red-500"
                     }
                   >
-                    {trade.claimOutcome}
+                    {trade.exitOutcome}
                   </span>
                 }
               />
             )}
-            {exitPrice !== null && (
-              <Row label="Exit Price" value={`$${exitPrice.toFixed(6)}`} />
-            )}
+            {exitPrice !== null && <Row label="Exit Price" value={`$${exitPrice.toFixed(6)}`} />}
             {isClosed && (
               <Row
                 label="Realized PnL"
@@ -128,60 +121,34 @@ export function TradeDetailPopup({
             )}
           </Section>
 
-          {/* Execution quality */}
-          <Section title="EXECUTION QUALITY">
-            <Row label="Entry Fees" value={`$${entryFees.toFixed(6)}`} />
-            <Row
-              label="Entry Slippage"
-              value={`${(entrySlippage * 100).toFixed(3)}%`}
-            />
-            <Row
-              label="Entry Latency"
-              value={trade.entryLatencyMs ? `${trade.entryLatencyMs}ms` : "—"}
-            />
-            <Row
-              label="Fill Status"
-              value={
-                <span
-                  className={
-                    trade.fillStatus === "FULL"
-                      ? "text-emerald-500"
-                      : trade.fillStatus === "PARTIAL"
-                        ? "text-amber-500"
-                        : "text-red-500"
-                  }
-                >
-                  {trade.fillStatus || "—"}
-                </span>
-              }
-            />
-          </Section>
-
-          {/* Strategy */}
-          <Section title="STRATEGY">
-            <Row
-              label="Strategy Trigger"
-              value={trade.strategyTrigger || "—"}
-            />
+          {/* Execution */}
+          <Section title="EXECUTION">
+            <Row label="Fill Status" value={
+              <span
+                className={
+                  trade.fillStatus === "FULL"
+                    ? "text-emerald-500"
+                    : trade.fillStatus === "PARTIAL"
+                      ? "text-amber-500"
+                      : "text-red-500"
+                }
+              >
+                {trade.fillStatus || "—"}
+              </span>
+            } />
+            {trade.strategyTrigger && (
+              <Row label="Strategy Trigger" value={trade.strategyTrigger} />
+            )}
           </Section>
 
           {/* Timestamps */}
           <Section title="TIMESTAMPS">
-            <Row
-              label="Opened"
-              value={new Date(trade.entryTs).toLocaleString()}
-            />
-            {trade.claimTs && (
-              <Row
-                label="Closed"
-                value={new Date(trade.claimTs).toLocaleString()}
-              />
+            <Row label="Opened" value={new Date(trade.entryTs).toLocaleString()} />
+            {trade.exitTs && (
+              <Row label="Closed" value={new Date(trade.exitTs).toLocaleString()} />
             )}
-            {trade.claimTs && (
-              <Row
-                label="Duration"
-                value={formatDuration(trade.entryTs, trade.claimTs)}
-              />
+            {trade.exitTs && (
+              <Row label="Duration" value={formatDuration(trade.entryTs, trade.exitTs)} />
             )}
           </Section>
         </div>
@@ -190,13 +157,7 @@ export function TradeDetailPopup({
   );
 }
 
-function Section({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div>
       <div className="text-[10px] text-muted-foreground tracking-widest border-b border-border/30 pb-1 mb-2">
@@ -207,19 +168,9 @@ function Section({
   );
 }
 
-function Row({
-  label,
-  value,
-  wide,
-}: {
-  label: string;
-  value: React.ReactNode;
-  wide?: boolean;
-}) {
+function Row({ label, value, wide }: { label: string; value: React.ReactNode; wide?: boolean }) {
   return (
-    <div
-      className={`flex ${wide ? "flex-col gap-0.5" : "justify-between items-center"}`}
-    >
+    <div className={`flex ${wide ? "flex-col gap-0.5" : "justify-between items-center"}`}>
       <span className="text-muted-foreground">{label}</span>
       <span className="text-foreground">{value}</span>
     </div>

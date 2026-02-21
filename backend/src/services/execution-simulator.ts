@@ -1,189 +1,179 @@
-import Decimal from "decimal.js";
 import { createModuleLogger } from "../utils/logger.js";
-import { Orderbook } from "../types/index.js";
+import { CRYPTO_FEE, type Orderbook, type OrderbookLevel } from "../types/index.js";
+import Decimal from "decimal.js";
 
 const logger = createModuleLogger("execution-simulator");
 
-Decimal.set({ precision: 28, rounding: Decimal.ROUND_HALF_UP });
-
-export interface ExecutionConfig {
-  latencyMin: number; // Min latency in ms
-  latencyMax: number; // Max latency in ms
-  slippageModel: "pessimistic" | "realistic" | "optimistic";
-  feeModel: "15m" | "standard"; // BTC 15M markets always use "15m"
-}
-
+/** Result of a simulated limit order fill */
 export interface ExecutionResult {
-  averagePrice: Decimal;
-  totalShares: Decimal;
-  totalSpent: Decimal;
+  averagePrice: number;
+  totalShares: number;
+  totalCost: number; // USD spent (before fees)
+  fees: number; // Taker fee in USD
+  netCost: number; // totalCost + fees
   isPartialFill: boolean;
-  fees: Decimal;
-  slippage: Decimal;
-  latencyMs: number;
-  fillDetails: Array<{
-    price: string;
-    size: string;
-    filledSize: string;
-  }>;
+  fillDetails: FillDetail[];
+  orderbookSnapshot: unknown;
+  feeRateBps: number;
+}
+
+interface FillDetail {
+  price: number;
+  shares: number;
+  cost: number;
+  feeForLevel: number;
 }
 
 /**
- * Calculate taker fee for 15M crypto markets based on Polymarket's fee curve.
+ * Simulates a GTC limit BUY order that crosses at the best ask.
  *
- * Per Polymarket docs (trading-fees.md):
- * - Formula: fee = takerBaseFee × min(price, 1-price) × size
- * - takerBaseFee comes from the market's Gamma API metadata
- * - 15M crypto markets typically have takerBaseFee = 200 (2% in basis points)
- * - Fee peaks at price 0.50 and declines toward 0 and 1
- */
-export function calculate15mTakerFee(
-  price: Decimal,
-  size: Decimal,
-  takerBaseFee?: number | null,
-): Decimal {
-  const basisPoints = takerBaseFee ?? 200;
-  const baseFeeRate = new Decimal(basisPoints).div(10000);
-  const priceFactor = Decimal.min(price, new Decimal(1).minus(price));
-  return baseFeeRate.mul(priceFactor).mul(size);
-}
-
-/**
- * Simulate latency (network + API processing delay)
- */
-export function simulateLatency(config: ExecutionConfig): number {
-  const range = config.latencyMax - config.latencyMin;
-  return config.latencyMin + Math.random() * range;
-}
-
-/**
- * Simulate price micro-movement during latency.
- * For BTC 15M markets the volatility is relatively high near window end.
- */
-export function simulateSlippage(
-  price: Decimal,
-  latencyMs: number,
-  config: ExecutionConfig,
-): Decimal {
-  let baseSlippageRate: Decimal;
-
-  switch (config.slippageModel) {
-    case "optimistic":
-      baseSlippageRate = new Decimal(0.0005);
-      break;
-    case "realistic":
-      baseSlippageRate = new Decimal(0.001);
-      break;
-    case "pessimistic":
-      baseSlippageRate = new Decimal(0.002);
-      break;
-  }
-
-  const latencyFactor = new Decimal(latencyMs).div(100);
-  const scaledSlippage = baseSlippageRate.mul(latencyFactor);
-  return price.mul(scaledSlippage);
-}
-
-/**
- * Simulate a BUY order walk through the orderbook (entry only).
+ * Models the scenario: user places a limit buy at `limitPrice`, and the order
+ * fills immediately against resting asks at or below that price (taker fill).
  *
- * Models:
- *  1. Walking ask levels to fill an order
- *  2. Latency between seeing the book and executing
- *  3. Slippage due to price drift
- *  4. Taker fees (15M fee curve)
- *  5. Partial fill scenarios
+ * Fee formula (from Polymarket docs, for 5M/15M crypto markets):
+ *   fee = C × feeRate × (p × (1 - p))^exponent
+ *   where C = shares, p = price, feeRate = 0.25, exponent = 2
+ *
+ * At p=0.97: fee per share = 0.25 × (0.97 × 0.03)^2 = 0.25 × 0.000847 = 0.000212
+ * So for 100 shares at 0.97: fee = 0.0212 USDC (~0.02% effective)
+ *
+ * Fees are rounded to 4 decimal places (smallest fee: 0.0001 USDC).
  */
-export function executeSimulatedOrder(
+export function simulateLimitBuy(
   orderbook: Orderbook,
-  amount: Decimal,
-  side: "BUY" | "SELL",
-  config: ExecutionConfig,
-  takerBaseFee?: number | null,
+  usdAmount: number,
+  limitPrice: number,
+  feeRateBps: number,
 ): ExecutionResult {
-  const rawLevels = side === "BUY" ? orderbook.asks : orderbook.bids;
+  // Sort asks by price ascending (best first)
+  const asks = [...orderbook.asks].sort(
+    (a, b) => parseFloat(a.price) - parseFloat(b.price),
+  );
 
-  if (rawLevels.length === 0) {
-    return {
-      averagePrice: new Decimal(0),
-      totalShares: new Decimal(0),
-      totalSpent: new Decimal(0),
-      isPartialFill: true,
-      fees: new Decimal(0),
-      slippage: new Decimal(0),
-      latencyMs: simulateLatency(config),
-      fillDetails: [],
-    };
-  }
-
-  // Sort best-first
-  const levels = [...rawLevels].sort((a, b) => {
-    const pA = parseFloat(a.price);
-    const pB = parseFloat(b.price);
-    return side === "BUY" ? pA - pB : pB - pA;
-  });
-
-  const latencyMs = simulateLatency(config);
-
-  let remainingAmount = amount;
+  const fillDetails: FillDetail[] = [];
+  let remainingUsd = new Decimal(usdAmount);
   let totalShares = new Decimal(0);
-  let totalSpent = new Decimal(0);
-  const fillDetails: ExecutionResult["fillDetails"] = [];
+  let totalCost = new Decimal(0);
+  let totalFees = new Decimal(0);
 
-  for (const level of levels) {
-    if (remainingAmount.lte(0)) break;
+  for (const level of asks) {
+    if (remainingUsd.lte(0)) break;
 
-    const levelPrice = new Decimal(level.price);
-    const levelSize = new Decimal(level.size);
+    const askPrice = parseFloat(level.price);
+    const askSize = parseFloat(level.size);
 
-    const slip = simulateSlippage(levelPrice, latencyMs, config);
-    const effectivePrice =
-      side === "BUY" ? levelPrice.plus(slip) : levelPrice.minus(slip);
+    // Only fill at prices at or below our limit price
+    if (askPrice > limitPrice) break;
 
-    let sharesToFill: Decimal;
-    let costAtLevel: Decimal;
+    // Calculate how many shares we can buy at this level
+    const feePerShare = calculateFeePerShare(askPrice, feeRateBps);
+    const costPerShare = new Decimal(askPrice).plus(feePerShare);
 
-    if (side === "BUY") {
-      const maxSharesAtLevel = remainingAmount.div(effectivePrice);
-      sharesToFill = Decimal.min(maxSharesAtLevel, levelSize);
-      costAtLevel = sharesToFill.mul(effectivePrice);
-    } else {
-      sharesToFill = Decimal.min(remainingAmount, levelSize);
-      costAtLevel = sharesToFill.mul(effectivePrice);
-    }
+    // Max shares we can afford at this level
+    const maxSharesByBudget = remainingUsd.div(costPerShare).toNumber();
+    const sharesToFill = Math.min(maxSharesByBudget, askSize);
 
-    totalShares = totalShares.plus(sharesToFill);
-    totalSpent = totalSpent.plus(costAtLevel);
-    remainingAmount = remainingAmount.minus(
-      side === "BUY" ? costAtLevel : sharesToFill,
-    );
+    if (sharesToFill <= 0) continue;
+
+    const shares = new Decimal(sharesToFill);
+    const cost = shares.mul(askPrice);
+    const fee = shares.mul(feePerShare);
+
+    totalShares = totalShares.plus(shares);
+    totalCost = totalCost.plus(cost);
+    totalFees = totalFees.plus(fee);
+    remainingUsd = remainingUsd.minus(cost).minus(fee);
 
     fillDetails.push({
-      price: effectivePrice.toString(),
-      size: levelSize.toString(),
-      filledSize: sharesToFill.toString(),
+      price: askPrice,
+      shares: sharesToFill,
+      cost: cost.toNumber(),
+      feeForLevel: fee.toNumber(),
     });
   }
 
-  const averagePrice = totalShares.gt(0)
-    ? totalSpent.div(totalShares)
-    : new Decimal(0);
+  const isPartialFill = remainingUsd.gt(new Decimal(usdAmount).mul(0.1)); // >10% unfilled
+  const avgPrice = totalShares.gt(0)
+    ? totalCost.div(totalShares).toNumber()
+    : 0;
 
-  // Always use 15M fee calculation
-  const fees = calculate15mTakerFee(averagePrice, totalShares, takerBaseFee);
+  // Round fees to 4 decimal places (Polymarket precision)
+  const roundedFees = Math.round(totalFees.toNumber() * 10000) / 10000;
 
-  const midPrice =
-    levels.length > 0 ? new Decimal(levels[0]?.price || 0) : new Decimal(0);
-  const slippage = averagePrice.minus(midPrice).abs();
+  if (totalShares.gt(0)) {
+    logger.debug(
+      {
+        avgPrice: avgPrice.toFixed(6),
+        shares: totalShares.toNumber().toFixed(4),
+        cost: totalCost.toNumber().toFixed(4),
+        fees: roundedFees.toFixed(4),
+        levels: fillDetails.length,
+        partial: isPartialFill,
+      },
+      "Limit buy simulated",
+    );
+  }
 
   return {
-    averagePrice,
-    totalShares,
-    totalSpent,
-    isPartialFill: remainingAmount.gt(0),
-    fees,
-    slippage,
-    latencyMs,
+    averagePrice: avgPrice,
+    totalShares: totalShares.toNumber(),
+    totalCost: totalCost.toNumber(),
+    fees: roundedFees,
+    netCost: totalCost.toNumber() + roundedFees,
+    isPartialFill,
     fillDetails,
+    orderbookSnapshot: {
+      bids: orderbook.bids.slice(0, 5),
+      asks: orderbook.asks.slice(0, 5),
+      tick_size: orderbook.tick_size,
+      timestamp: orderbook.timestamp,
+    },
+    feeRateBps,
   };
+}
+
+/**
+ * Calculate fee per share using Polymarket's documented formula.
+ * fee_per_share = feeRate × (p × (1-p))^exponent
+ *
+ * For crypto 5M/15M: feeRate = 0.25, exponent = 2
+ * For fee-free markets: returns 0
+ */
+function calculateFeePerShare(price: number, feeRateBps: number): number {
+  if (feeRateBps <= 0) return 0;
+
+  // Use the canonical formula from docs:
+  // fee = C × feeRate × (p × (1-p))^exponent
+  // Per share (C=1): fee = feeRate × (p × (1-p))^exponent
+  const feeRate = CRYPTO_FEE.RATE;
+  const exponent = CRYPTO_FEE.EXPONENT;
+  const pq = price * (1 - price); // p × (1-p)
+  const fee = feeRate * Math.pow(pq, exponent);
+
+  // Round to 4 decimal places (smallest fee: 0.0001)
+  return Math.round(fee * 10000) / 10000;
+}
+
+/**
+ * Calculate expected profit for a winning trade at a given entry price.
+ * profit = (1.00 - entryPrice) × shares - fees
+ */
+export function calculateWinProfit(
+  entryPrice: number,
+  shares: number,
+  fees: number,
+): number {
+  return (1.0 - entryPrice) * shares - fees;
+}
+
+/**
+ * Calculate expected loss for a losing trade at a given entry price.
+ * loss = -(entryPrice × shares + fees)
+ */
+export function calculateLossAmount(
+  entryPrice: number,
+  shares: number,
+  fees: number,
+): number {
+  return -(entryPrice * shares + fees);
 }

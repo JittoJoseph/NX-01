@@ -5,15 +5,8 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1770404558938,
-      "tag": "0000_minor_lilandra",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1770476163621,
-      "tag": "0001_fat_deathbird",
+      "when": 1771656759131,
+      "tag": "0000_clumsy_loki",
       "breakpoints": true
     }
   ]

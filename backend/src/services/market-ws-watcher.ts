@@ -1,569 +1,288 @@
-import WebSocket from "ws";
 import { EventEmitter } from "events";
-import { getConfig } from "../utils/config.js";
+import WebSocket from "ws";
 import { createModuleLogger } from "../utils/logger.js";
-import { calculateBackoff } from "../utils/retry.js";
-import { logAudit } from "../db/client.js";
-import type { ClobWsMessage } from "../interfaces/index.js";
+import { POLY_URLS } from "../types/index.js";
+import type {
+  ClobWsMessage,
+  PriceUpdateEvent,
+  OrderbookUpdateEvent,
+  BestBidAskEvent,
+  MarketResolvedEvent,
+  TickSizeChangeEvent,
+  MarketSubscriptionMessage,
+  SubscriptionUpdateMessage,
+} from "../interfaces/websocket-types.js";
 
 const logger = createModuleLogger("market-ws-watcher");
 
-interface MarketSubscription {
-  marketId: string;
-  tokenId: string;
-  marketCategory: string;
-  marketEndTime: Date;
-}
-
 /**
- * Market WebSocket Watcher - Real-time orderbook monitoring for target markets
+ * Real-time market data via Polymarket CLOB WebSocket.
+ * Subscribes with custom_feature_enabled=true to receive:
+ *   - book: full orderbook on subscribe + on trades
+ *   - price_change: new/cancelled orders with best_bid/best_ask
+ *   - best_bid_ask: top-of-book changes (custom feature)
+ *   - last_trade_price: matched trades
+ *   - tick_size_change: when price >0.96 or <0.04
+ *   - market_resolved: market resolution (custom feature)
  *
- * Key differences from old ws-watcher:
- * - Subscribes to MARKETS not user positions
- * - Monitors orderbook updates for strategy opportunities
- * - Feeds data to StrategyEngine for evaluation
- * - Subscribes based on discovered markets from MarketScanner
+ * Emits: "priceUpdate", "orderbookUpdate", "bestBidAskUpdate",
+ *        "marketResolved", "tickSizeChange", "connected", "disconnected"
  */
 export class MarketWebSocketWatcher extends EventEmitter {
   private ws: WebSocket | null = null;
-  private isConnected = false;
-  private shouldReconnect = false;
-  private reconnectAttempts = 0;
-  private pingInterval: NodeJS.Timeout | null = null;
-  private reconnectTimeout: NodeJS.Timeout | null = null;
+  private subscribedTokens: Set<string> = new Set();
+  private running = false;
+  private reconnectAttempt = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private messageCount = 0;
 
-  // Markets we're actively watching
-  private subscribedTokens = new Set<string>();
-  private marketSubscriptions = new Map<string, MarketSubscription>();
+  private static readonly PING_INTERVAL = 10000;
+  private static readonly MAX_RECONNECT_DELAY = 60000;
+  private static readonly BASE_RECONNECT_DELAY = 1000;
 
-  constructor() {
-    super();
+  start(): void {
+    if (this.running) return;
+    this.running = true;
+    this.connect();
+    logger.info("Market WebSocket watcher started");
   }
 
-  /**
-   * Start the watcher service
-   * Connects to Polymarket CLOB WebSocket
-   */
-  async start(): Promise<void> {
-    logger.info("Starting Market WebSocket Watcher");
-    this.shouldReconnect = true;
-
-    try {
-      await this.connect();
-    } catch (error) {
-      logger.error(
-        {
-          error:
-            error instanceof Error
-              ? error.message
-              : String(error) || "Failed to start WebSocket watcher",
-        },
-        "Failed to start WebSocket watcher",
-      );
-      // Don't throw - let the system continue without WebSocket
-      this.scheduleReconnect();
+  stop(): void {
+    this.running = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
     }
-  }
-
-  async stop(): Promise<void> {
-    logger.info("Stopping Market WebSocket Watcher");
-    this.shouldReconnect = false;
-
-    if (this.pingInterval) {
-      clearInterval(this.pingInterval);
-      this.pingInterval = null;
+    if (this.pingTimer) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
     }
-
-    if (this.reconnectTimeout) {
-      clearTimeout(this.reconnectTimeout);
-      this.reconnectTimeout = null;
-    }
-
     if (this.ws) {
-      this.ws.close();
+      this.ws.removeAllListeners();
+      if (this.ws.readyState === WebSocket.OPEN) this.ws.close();
       this.ws = null;
     }
-
-    this.isConnected = false;
-    this.subscribedTokens.clear();
-    this.marketSubscriptions.clear();
+    logger.info("Market WebSocket watcher stopped");
   }
 
-  /**
-   * Connect to Polymarket CLOB WebSocket
-   */
-  private async connect(): Promise<void> {
-    if (this.ws) {
-      logger.warn("WebSocket already exists, closing before reconnecting");
-      this.ws.close();
-    }
+  subscribe(tokenIds: string[]): void {
+    const newTokens = tokenIds.filter((id) => !this.subscribedTokens.has(id));
+    if (newTokens.length === 0) return;
 
-    const config = getConfig();
-    // Per docs: market channel URL is wss://ws-subscriptions-clob.polymarket.com/ws/market
-    // The config stores the base path; we append 'market' for the market channel
-    let wsUrl = config.poly.clobWs;
-    if (wsUrl && !wsUrl.endsWith("/market")) {
-      wsUrl = wsUrl.endsWith("/") ? wsUrl + "market" : wsUrl + "/market";
-    }
+    newTokens.forEach((id) => this.subscribedTokens.add(id));
 
-    if (!wsUrl || !wsUrl.startsWith("wss://")) {
-      logger.error({ wsUrl }, "Invalid WebSocket URL");
-      this.scheduleReconnect();
-      return;
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      const msg: SubscriptionUpdateMessage = {
+        assets_ids: newTokens,
+        operation: "subscribe",
+      };
+      this.ws.send(JSON.stringify(msg));
+      logger.info({ count: newTokens.length }, "Subscribed to new tokens");
     }
+  }
 
-    logger.info({ url: wsUrl }, "Connecting to Polymarket CLOB WebSocket");
+  unsubscribe(tokenIds: string[]): void {
+    tokenIds.forEach((id) => this.subscribedTokens.delete(id));
+
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      const msg: SubscriptionUpdateMessage = {
+        assets_ids: tokenIds,
+        operation: "unsubscribe",
+      };
+      this.ws.send(JSON.stringify(msg));
+    }
+  }
+
+  isConnected(): boolean {
+    return this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  getStats() {
+    return {
+      connected: this.isConnected(),
+      subscribedTokens: this.subscribedTokens.size,
+      messageCount: this.messageCount,
+      reconnectAttempts: this.reconnectAttempt,
+    };
+  }
+
+  private connect(): void {
+    if (!this.running) return;
 
     try {
-      this.ws = new WebSocket(wsUrl);
+      this.ws = new WebSocket(POLY_URLS.CLOB_WS);
 
-      this.ws.on("open", () => this.handleOpen());
-      this.ws.on("message", (data) => this.handleMessage(data));
-      this.ws.on("error", (error) => this.handleError(error));
-      this.ws.on("close", () => this.handleClose());
+      this.ws.on("open", () => {
+        logger.info("CLOB WebSocket connected");
+        this.reconnectAttempt = 0;
+        this.emit("connected");
 
-      // Add connection timeout
-      const connectionTimeout = setTimeout(() => {
-        if (!this.isConnected) {
-          logger.error("WebSocket connection timeout after 10 seconds");
-          this.ws?.close();
-        }
-      }, 10000);
-
-      // Clear timeout on successful connection
-      this.ws.once("open", () => {
-        clearTimeout(connectionTimeout);
-      });
-    } catch (error) {
-      logger.error(
-        {
-          error:
-            error instanceof Error
-              ? error.message
-              : String(error) || "Failed to create WebSocket",
-          wsUrl,
-        },
-        "Failed to create WebSocket connection",
-      );
-      this.scheduleReconnect();
-    }
-  }
-
-  private handleOpen(): void {
-    logger.info("WebSocket connected");
-    this.isConnected = true;
-    this.reconnectAttempts = 0;
-    this.emit("connected");
-
-    // Start heartbeat
-    this.startPingInterval();
-
-    // Resubscribe to all markets if reconnecting
-    if (this.marketSubscriptions.size > 0) {
-      logger.info(
-        { count: this.marketSubscriptions.size },
-        "Resubscribing to markets after reconnect",
-      );
-      this.resubscribeToAllMarkets();
-    }
-
-    logAudit("info", "websocket", "Market WebSocket connected", {
-      subscribedMarkets: this.marketSubscriptions.size,
-    });
-  }
-
-  private handleMessage(data: WebSocket.Data): void {
-    try {
-      const raw = data.toString();
-
-      // Handle known text responses that are not JSON
-      if (raw === "PONG") return;
-      if (raw === "INVALID OPERATION") {
-        // This occurs when subscribing to non-existent or expired tokens - expected behavior
-        logger.debug("Received INVALID OPERATION from WebSocket (token may not exist or is expired)");
-        return;
-      }
-
-      const parsed = JSON.parse(raw);
-
-      // Handle array messages — Polymarket WS may send arrays of events
-      const messages: ClobWsMessage[] = Array.isArray(parsed)
-        ? parsed
-        : [parsed];
-
-      for (const message of messages) {
-        if (!message || typeof message !== "object") continue;
-
-        // Handle different message types
-        if (message.event_type === "book") {
-          this.handleOrderbookUpdate(message);
-        } else if (
-          message.event_type === "tick" ||
-          message.event_type === "price_change"
-        ) {
-          this.handlePriceTick(message);
-        } else {
-          // Log unknown event types at debug level so we can discover the actual format
-          logger.debug(
-            { event_type: message.event_type, keys: Object.keys(message) },
-            "Unhandled WS event type",
+        // Subscribe to all tracked tokens with custom features enabled
+        if (this.subscribedTokens.size > 0) {
+          const msg: MarketSubscriptionMessage = {
+            assets_ids: Array.from(this.subscribedTokens),
+            type: "market",
+            custom_feature_enabled: true,
+          };
+          this.ws!.send(JSON.stringify(msg));
+          logger.info(
+            { tokenCount: this.subscribedTokens.size },
+            "Sent initial subscription with custom_feature_enabled",
           );
         }
-      }
+
+        // Keepalive ping every 10s
+        this.pingTimer = setInterval(() => {
+          if (this.ws?.readyState === WebSocket.OPEN) {
+            this.ws.send("PING");
+          }
+        }, MarketWebSocketWatcher.PING_INTERVAL);
+      });
+
+      this.ws.on("message", (rawData: WebSocket.Data) => {
+        this.messageCount++;
+        try {
+          const text = rawData.toString();
+
+          // Handle text responses (PONG, errors)
+          if (text === "PONG" || text.startsWith("INVALID")) return;
+
+          const msg: ClobWsMessage = JSON.parse(text);
+          this.handleMessage(msg);
+        } catch {
+          // ignore parse errors
+        }
+      });
+
+      this.ws.on("close", (code: number, reason: Buffer) => {
+        logger.warn({ code, reason: reason.toString() }, "CLOB WebSocket closed");
+        this.cleanup();
+        this.emit("disconnected", { code, reason: reason.toString() });
+        this.scheduleReconnect();
+      });
+
+      this.ws.on("error", (error: Error) => {
+        logger.error({ error: error.message }, "CLOB WebSocket error");
+        this.emit("error", error);
+      });
     } catch (error) {
-      logger.error(
-        { error, data: data.toString().slice(0, 200) },
-        "Failed to parse WebSocket message",
-      );
-    }
-  }
-
-  private handleOrderbookUpdate(message: ClobWsMessage): void {
-    const tokenId = message.asset_id;
-    if (!tokenId || !this.subscribedTokens.has(tokenId)) {
-      return; // Not a token we're watching
-    }
-
-    const subscription = this.marketSubscriptions.get(tokenId);
-    if (!subscription) {
-      return;
-    }
-
-    // Extract orderbook from message
-    const orderbook = this.parseOrderbook(message);
-    if (!orderbook) {
-      return;
-    }
-
-    // Emit to StrategyEngine for evaluation
-    this.emit("orderbookUpdate", {
-      marketId: subscription.marketId,
-      tokenId,
-      marketCategory: subscription.marketCategory,
-      marketEndTime: subscription.marketEndTime,
-      orderbook,
-      timestamp: new Date(),
-    });
-  }
-
-  /**
-   * Handle price_change events — the SINGLE authoritative price source.
-   *
-   * Each price_change contains best_bid/best_ask per asset after that order change.
-   * We compute (best_bid + best_ask) / 2 as the midpoint — identical to what the
-   * REST /midpoint endpoint returns, but in real-time.
-   *
-   * This is the ONLY event that emits priceUpdate. No other handlers compete.
-   */
-  private handlePriceTick(message: ClobWsMessage): void {
-    const priceChanges = message.price_changes;
-    if (priceChanges && Array.isArray(priceChanges)) {
-      for (const change of priceChanges) {
-        const tokenId = change.asset_id;
-        if (!tokenId || !this.subscribedTokens.has(tokenId)) continue;
-
-        const subscription = this.marketSubscriptions.get(tokenId);
-        if (!subscription) continue;
-
-        const bestBid = parseFloat(change.best_bid);
-        const bestAsk = parseFloat(change.best_ask);
-
-        if (isNaN(bestBid) || isNaN(bestAsk) || bestBid <= 0 || bestAsk <= 0)
-          continue;
-
-        const midpoint = (bestBid + bestAsk) / 2;
-
-        this.emit("priceUpdate", {
-          marketId: subscription.marketId,
-          tokenId,
-          marketCategory: subscription.marketCategory,
-          marketEndTime: subscription.marketEndTime,
-          price: midpoint,
-          bestBid,
-          bestAsk,
-          timestamp: new Date(),
-        });
-      }
-      return;
-    }
-
-    // Fallback: older tick format with direct asset_id + price
-    const tokenId = message.asset_id;
-    if (!tokenId || !this.subscribedTokens.has(tokenId)) return;
-
-    const subscription = this.marketSubscriptions.get(tokenId);
-    if (!subscription) return;
-
-    const price = message.price ? parseFloat(message.price) : null;
-    if (!price || price <= 0 || price >= 1) return;
-
-    this.emit("priceUpdate", {
-      marketId: subscription.marketId,
-      tokenId,
-      marketCategory: subscription.marketCategory,
-      marketEndTime: subscription.marketEndTime,
-      price,
-      timestamp: new Date(),
-    });
-  }
-
-  private handleError(error: Error): void {
-    logger.error(
-      {
-        error: error?.message || error?.toString() || "Unknown WebSocket error",
-        errorName: error?.name || "Unknown",
-        stack: error?.stack || "No stack trace",
-        isConnected: this.isConnected,
-        wsUrl: getConfig().poly.clobWs,
-      },
-      "WebSocket error",
-    );
-    this.emit("error", error);
-  }
-
-  private handleClose(): void {
-    logger.warn("WebSocket disconnected");
-    this.isConnected = false;
-    this.emit("disconnected");
-
-    if (this.pingInterval) {
-      clearInterval(this.pingInterval);
-      this.pingInterval = null;
-    }
-
-    // Clear any pending connection timeout
-    if (this.reconnectTimeout) {
-      clearTimeout(this.reconnectTimeout);
-      this.reconnectTimeout = null;
-    }
-
-    if (this.shouldReconnect) {
+      logger.error({ error }, "Failed to create CLOB WebSocket");
       this.scheduleReconnect();
+    }
+  }
+
+  private handleMessage(msg: ClobWsMessage): void {
+    const ts = typeof msg.timestamp === "string"
+      ? parseInt(msg.timestamp, 10)
+      : msg.timestamp ?? Date.now();
+
+    switch (msg.event_type) {
+      case "book":
+        if (msg.asset_id && msg.bids && msg.asks) {
+          this.emit("orderbookUpdate", {
+            tokenId: msg.asset_id,
+            bids: msg.bids,
+            asks: msg.asks,
+            hash: msg.hash ?? "",
+            timestamp: ts,
+          } satisfies OrderbookUpdateEvent);
+        }
+        break;
+
+      case "price_change":
+        if (msg.price_changes) {
+          for (const pc of msg.price_changes) {
+            this.emit("priceUpdate", {
+              tokenId: pc.asset_id,
+              bestBid: pc.best_bid,
+              bestAsk: pc.best_ask,
+              midpoint: (parseFloat(pc.best_bid) + parseFloat(pc.best_ask)) / 2,
+              timestamp: ts,
+            } satisfies PriceUpdateEvent);
+          }
+        }
+        break;
+
+      case "best_bid_ask":
+        if (msg.asset_id && msg.best_bid && msg.best_ask) {
+          this.emit("bestBidAskUpdate", {
+            tokenId: msg.asset_id,
+            bestBid: msg.best_bid,
+            bestAsk: msg.best_ask,
+            spread: msg.spread ?? "0",
+            timestamp: ts,
+          } satisfies BestBidAskEvent);
+        }
+        break;
+
+      case "last_trade_price":
+        // Also emit as price update for tracking
+        if (msg.asset_id && msg.price) {
+          // last_trade_price doesn't have best_bid/best_ask, skip
+        }
+        break;
+
+      case "tick_size_change":
+        if (msg.asset_id && msg.old_tick_size && msg.new_tick_size) {
+          logger.warn(
+            { tokenId: msg.asset_id, old: msg.old_tick_size, new: msg.new_tick_size },
+            "Tick size changed — price near extremes",
+          );
+          this.emit("tickSizeChange", {
+            tokenId: msg.asset_id,
+            oldTickSize: msg.old_tick_size,
+            newTickSize: msg.new_tick_size,
+            timestamp: ts,
+          } satisfies TickSizeChangeEvent);
+        }
+        break;
+
+      case "market_resolved":
+        if (msg.market && msg.winning_asset_id && msg.winning_outcome) {
+          logger.info(
+            {
+              market: msg.market,
+              winner: msg.winning_outcome,
+              winnerAsset: msg.winning_asset_id,
+            },
+            "Market resolved via WebSocket",
+          );
+          this.emit("marketResolved", {
+            marketId: msg.id ?? "",
+            conditionId: msg.market,
+            winningAssetId: msg.winning_asset_id,
+            winningOutcome: msg.winning_outcome,
+            timestamp: ts,
+          } satisfies MarketResolvedEvent);
+        }
+        break;
+    }
+  }
+
+  private cleanup(): void {
+    if (this.pingTimer) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
     }
   }
 
   private scheduleReconnect(): void {
-    const backoffMs = calculateBackoff(
-      this.reconnectAttempts,
-      60000,
-      1000,
-      300,
-    );
-    this.reconnectAttempts++;
+    if (!this.running) return;
+    const delay = Math.min(
+      MarketWebSocketWatcher.BASE_RECONNECT_DELAY * Math.pow(2, this.reconnectAttempt),
+      MarketWebSocketWatcher.MAX_RECONNECT_DELAY,
+    ) + Math.random() * 300;
 
-    logger.info(
-      { attempt: this.reconnectAttempts, backoffMs },
-      "Scheduling WebSocket reconnect",
-    );
-
-    this.reconnectTimeout = setTimeout(() => {
-      this.connect();
-    }, backoffMs);
-  }
-
-  private startPingInterval(): void {
-    // Per docs: Send "PING" text message every 5-10 seconds to maintain connection
-    // Using 10 seconds as the interval
-    this.pingInterval = setInterval(() => {
-      if (this.ws && this.isConnected) {
-        try {
-          this.ws.send("PING");
-        } catch (error) {
-          logger.error({ error }, "Failed to send PING");
-        }
-      }
-    }, 10000);
-  }
-
-  /**
-   * Subscribe to a market token
-   */
-  private subscribeToMarket(tokenId: string): void {
-    if (!this.ws || !this.isConnected) {
-      logger.warn({ tokenId }, "Cannot subscribe - WebSocket not connected");
-      return;
-    }
-
-    try {
-      // Per docs: Market channel uses 'assets_ids' (token IDs)
-      // https://docs.polymarket.com/developers/CLOB/websocket/wss-overview
-      const subscribeMessage = {
-        assets_ids: [tokenId],
-        operation: "subscribe",
-        type: "market",
-      };
-
-      this.ws.send(JSON.stringify(subscribeMessage));
-      this.subscribedTokens.add(tokenId);
-
-      logger.info({ tokenId }, "Subscribed to market");
-    } catch (error) {
-      logger.error({ error, tokenId }, "Failed to subscribe to market");
-    }
-  }
-
-  /**
-   * Resubscribe to all markets with a single message (used on reconnect)
-   */
-  private resubscribeToAllMarkets(): void {
-    if (!this.ws || !this.isConnected || this.marketSubscriptions.size === 0) {
-      return;
-    }
-
-    try {
-      const allTokenIds = Array.from(this.marketSubscriptions.keys());
-
-      // Send single subscription message with all tokens
-      const resubscribeMessage = {
-        assets_ids: allTokenIds,
-        type: "market",
-      };
-
-      this.ws.send(JSON.stringify(resubscribeMessage));
-
-      // Mark all as subscribed
-      for (const tokenId of allTokenIds) {
-        this.subscribedTokens.add(tokenId);
-      }
-
-      logger.info(
-        { tokenIds: allTokenIds, count: allTokenIds.length },
-        "Resubscribed to all markets",
-      );
-    } catch (error) {
-      logger.error({ error }, "Failed to resubscribe to all markets");
-    }
-  }
-
-  /**
-   * Update subscription with current list of all markets
-   */
-  private updateSubscription(): void {
-    if (!this.ws || !this.isConnected) {
-      return;
-    }
-
-    try {
-      const allTokenIds = Array.from(this.marketSubscriptions.keys());
-
-      if (allTokenIds.length === 0) {
-        // No markets to subscribe to
-        return;
-      }
-
-      // Send subscription message with all current tokens
-      const subscriptionMessage = {
-        assets_ids: allTokenIds,
-        type: "market",
-      };
-
-      this.ws.send(JSON.stringify(subscriptionMessage));
-
-      // Mark all as subscribed
-      for (const tokenId of allTokenIds) {
-        this.subscribedTokens.add(tokenId);
-      }
-
-      logger.info(
-        { tokenIds: allTokenIds, count: allTokenIds.length },
-        "Updated market subscription",
-      );
-    } catch (error) {
-      logger.error({ error }, "Failed to update market subscription");
-    }
-  }
-
-  /**
-   * Add a market to watch
-   */
-  addMarket(subscription: MarketSubscription): void {
-    const { tokenId, marketId, marketCategory, marketEndTime } = subscription;
-
-    // Store subscription info
-    this.marketSubscriptions.set(tokenId, subscription);
-
-    // Subscribe if connected
-    if (this.isConnected) {
-      this.updateSubscription();
-    } else {
-      logger.debug({ tokenId }, "Market added but WebSocket not connected yet");
-    }
-
-    logger.info(
-      {
-        marketId,
-        tokenId,
-        category: marketCategory,
-        endTime: marketEndTime,
-        totalSubscriptions: this.marketSubscriptions.size,
-      },
-      "Market added to watch list",
-    );
-  }
-
-  /**
-   * Remove a market from watch list
-   */
-  removeMarket(tokenId: string): void {
-    this.marketSubscriptions.delete(tokenId);
-    this.subscribedTokens.delete(tokenId);
-
-    // Update subscription with remaining markets
-    if (this.ws && this.isConnected) {
-      this.updateSubscription();
-    }
-
-    logger.info({ tokenId }, "Market removed from watch list");
-  }
-
-  /**
-   * Parse orderbook from WebSocket message
-   */
-  private parseOrderbook(message: ClobWsMessage): {
-    bids: Array<{ price: string; size: string }>;
-    asks: Array<{ price: string; size: string }>;
-  } | null {
-    // CLOB WebSocket sends book updates with bids/asks arrays
-    const { bids, asks } = message;
-
-    if (!bids || !asks || !Array.isArray(bids) || !Array.isArray(asks)) {
-      return null;
-    }
-
-    return {
-      bids: bids.map((b) => ({
-        price: String(b.price ?? (b as any)[0] ?? "0"),
-        size: String(b.size ?? (b as any)[1] ?? "0"),
-      })),
-      asks: asks.map((a) => ({
-        price: String(a.price ?? (a as any)[0] ?? "0"),
-        size: String(a.size ?? (a as any)[1] ?? "0"),
-      })),
-    };
-  }
-
-  /**
-   * Get statistics
-   */
-  getStats(): {
-    isConnected: boolean;
-    subscribedMarkets: number;
-    reconnectAttempts: number;
-  } {
-    return {
-      isConnected: this.isConnected,
-      subscribedMarkets: this.marketSubscriptions.size,
-      reconnectAttempts: this.reconnectAttempts,
-    };
+    this.reconnectAttempt++;
+    logger.info({ delay: Math.round(delay), attempt: this.reconnectAttempt }, "CLOB reconnecting");
+    this.reconnectTimer = setTimeout(() => this.connect(), delay);
   }
 }
 
-// Singleton instance
-let watcherInstance: MarketWebSocketWatcher | null = null;
-
+// Singleton
+let instance: MarketWebSocketWatcher | null = null;
 export function getMarketWebSocketWatcher(): MarketWebSocketWatcher {
-  if (!watcherInstance) {
-    watcherInstance = new MarketWebSocketWatcher();
-  }
-  return watcherInstance;
+  if (!instance) instance = new MarketWebSocketWatcher();
+  return instance;
 }

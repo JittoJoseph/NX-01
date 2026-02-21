@@ -1,33 +1,110 @@
 import { z } from "zod";
 
 // ============================================
+// Window Configuration
+// ============================================
+
+export const MARKET_WINDOWS = ["5M", "15M", "1H", "4H", "1D"] as const;
+export type MarketWindow = (typeof MARKET_WINDOWS)[number];
+
+export interface WindowConfig {
+  tagSlug: string;
+  slugPrefix: string;
+  seriesSlug: string;
+  durationMs: number;
+  category: string;
+  label: string;
+}
+
+export const WINDOW_CONFIGS: Record<MarketWindow, WindowConfig> = {
+  "5M": {
+    tagSlug: "5M",
+    slugPrefix: "btc-updown-5m",
+    seriesSlug: "btc-up-or-down-5m",
+    durationMs: 5 * 60 * 1000,
+    category: "btc-5m",
+    label: "BTC 5-Minute",
+  },
+  "15M": {
+    tagSlug: "15M",
+    slugPrefix: "btc-updown-15m",
+    seriesSlug: "btc-up-or-down-15m",
+    durationMs: 15 * 60 * 1000,
+    category: "btc-15m",
+    label: "BTC 15-Minute",
+  },
+  "1H": {
+    tagSlug: "1H",
+    slugPrefix: "btc-updown-1h",
+    seriesSlug: "btc-up-or-down-1h",
+    durationMs: 60 * 60 * 1000,
+    category: "btc-1h",
+    label: "BTC 1-Hour",
+  },
+  "4H": {
+    tagSlug: "4H",
+    slugPrefix: "btc-updown-4h",
+    seriesSlug: "btc-up-or-down-4h",
+    durationMs: 4 * 60 * 60 * 1000,
+    category: "btc-4h",
+    label: "BTC 4-Hour",
+  },
+  "1D": {
+    tagSlug: "1D",
+    slugPrefix: "btc-updown-1d",
+    seriesSlug: "btc-up-or-down-1d",
+    durationMs: 24 * 60 * 60 * 1000,
+    category: "btc-1d",
+    label: "BTC 1-Day",
+  },
+};
+
+// ============================================
+// API URL Constants (hardcoded, not env vars)
+// ============================================
+
+export const POLY_URLS = {
+  GAMMA_API_BASE: "https://gamma-api.polymarket.com",
+  CLOB_BASE: "https://clob.polymarket.com",
+  CLOB_WS: "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+  RTDS_WS: "wss://ws-live-data.polymarket.com",
+} as const;
+
+// ============================================
+// Fee Constants (from Polymarket docs)
+// For 5-Min & 15-Min Crypto markets:
+//   fee = C × feeRate × (p × (1-p))^exponent
+//   feeRate = 0.25, exponent = 2, maker rebate = 20%
+// ============================================
+
+export const CRYPTO_FEE = {
+  RATE: 0.25,
+  EXPONENT: 2,
+  MAKER_REBATE_PERCENT: 0.20,
+} as const;
+
+// ============================================
 // Configuration Schema
 // ============================================
 
 export const ConfigSchema = z.object({
-  poly: z.object({
-    gammaApiBase: z.string().url(),
-    clobBase: z.string().url(),
-    clobWs: z.string(),
-  }),
   db: z.object({
     url: z.string(),
   }),
   simulation: z.object({
-    amountUsd: z.number().min(0.01).max(1000),
-    entryThreshold: z.number().min(0.5).max(0.99),
-    entryThresholdMax: z.number().min(0.5).max(0.99),
-    claimDelayMs: z.number().min(0),
+    amountUsd: z.number().min(0.01).max(10000),
   }),
   strategy: z.object({
-    maxSimultaneousPositions: z.number().min(1).max(200),
-    nearEndWindowSeconds: z.number().min(5).max(600),
+    marketWindow: z.enum(MARKET_WINDOWS),
+    tradeFromWindowSeconds: z.number().min(5).max(600),
+    entryPriceThreshold: z.number().min(0.90).max(0.99),
+    maxSimultaneousPositions: z.number().min(1).max(100),
+    resolutionWatchMinutes: z.number().min(1).max(30),
+    minBtcDistancePercent: z.number().min(0).max(5),
     scanIntervalMs: z.number().min(10000),
-    minLookAheadMs: z.number().min(60000),
   }),
   stopLoss: z.object({
-    enabled: z.boolean(),
-    threshold: z.number().min(0.10).max(0.75), // Trigger if price drops to this level
+    threshold: z.number().min(0.01).max(0.99),
   }),
   wipe: z.object({
     password: z.string().min(1),
@@ -45,20 +122,16 @@ export const ConfigSchema = z.object({
 export type Config = z.infer<typeof ConfigSchema>;
 
 // ============================================
-// Gamma API - Tag
+// Gamma API Types
 // ============================================
+
 export const GammaTagSchema = z.object({
   id: z.number().or(z.string()),
   label: z.string().optional(),
   slug: z.string().optional(),
 });
-
 export type GammaTag = z.infer<typeof GammaTagSchema>;
 
-// ============================================
-// Gamma API - Markets
-// Per docs: https://docs.polymarket.com/developers/gamma-markets-api/get-markets
-// ============================================
 export const GammaMarketSchema = z.object({
   id: z.string(),
   question: z.string().nullable().optional(),
@@ -92,13 +165,8 @@ export const GammaMarketSchema = z.object({
   tags: z.array(GammaTagSchema).optional(),
   events: z.array(z.record(z.unknown())).optional(),
 });
-
 export type GammaMarket = z.infer<typeof GammaMarketSchema>;
 
-// ============================================
-// Gamma API - Event (contains one or more markets)
-// Per docs: https://docs.polymarket.com/developers/gamma-markets-api/overview
-// ============================================
 export const GammaEventSchema = z.object({
   id: z.string().or(z.number()),
   slug: z.string().optional(),
@@ -114,13 +182,12 @@ export const GammaEventSchema = z.object({
   markets: z.array(GammaMarketSchema).optional(),
   seriesSlug: z.string().nullable().optional(),
 });
-
 export type GammaEvent = z.infer<typeof GammaEventSchema>;
 
 // ============================================
-// CLOB API - Orderbook
-// Per docs: https://docs.polymarket.com/api-reference/orderbook/get-order-book-summary
+// CLOB API Types
 // ============================================
+
 export const OrderbookLevelSchema = z.object({
   price: z.string(),
   size: z.string(),
@@ -133,7 +200,7 @@ export const OrderbookSchema = z.object({
   hash: z.string(),
   bids: z.array(OrderbookLevelSchema),
   asks: z.array(OrderbookLevelSchema),
-  min_order_size: z.string(),
+  min_order_size: z.string().optional(),
   tick_size: z.string(),
   neg_risk: z.boolean(),
 });
@@ -141,36 +208,21 @@ export const OrderbookSchema = z.object({
 export type Orderbook = z.infer<typeof OrderbookSchema>;
 export type OrderbookLevel = z.infer<typeof OrderbookLevelSchema>;
 
-// ============================================
-// CLOB API - Price
-// Per docs: https://docs.polymarket.com/api-reference/pricing/get-market-price
-// ============================================
-export const PriceResponseSchema = z.object({
-  price: z.string(),
-});
-
+export const PriceResponseSchema = z.object({ price: z.string() });
 export type PriceResponse = z.infer<typeof PriceResponseSchema>;
 
-// ============================================
-// CLOB API - Midpoint
-// Per docs: https://docs.polymarket.com/api-reference/pricing/get-midpoint-price
-// ============================================
-export const MidpointResponseSchema = z.object({
-  mid: z.string(),
-});
-
+export const MidpointResponseSchema = z.object({ mid: z.string() });
 export type MidpointResponse = z.infer<typeof MidpointResponseSchema>;
 
+export const FeeRateResponseSchema = z.object({ fee_rate_bps: z.string() });
+export type FeeRateResponse = z.infer<typeof FeeRateResponseSchema>;
+
 // ============================================
-// API Response Wrappers
+// API Response Wrapper
 // ============================================
 
 export interface ApiResponse<T> {
   success: boolean;
   data?: T;
-  error?: {
-    code: string;
-    message: string;
-    retryAfter?: number;
-  };
+  error?: { code: string; message: string; retryAfter?: number };
 }
