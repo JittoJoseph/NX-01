@@ -82,10 +82,27 @@ export function useTrades(status?: string, limit?: number) {
 
 /**
  * Hook providing live market info from the systemState WS broadcast.
- * Resolves every 2 s with fresh prices + endDate.
+ * Seeds initial state from REST /api/active-market at mount so the top section
+ * renders immediately, then WS updates take over in real-time.
  */
 export function useLiveMarkets(): LiveMarketInfo[] {
   const [liveMarkets, setLiveMarkets] = useState<LiveMarketInfo[]>([]);
+
+  // Seed from REST on mount so top section isn't blank before first WS broadcast
+  useEffect(() => {
+    let cancelled = false;
+    getApiClient()
+      .getActiveMarket()
+      .then((market) => {
+        if (!cancelled && market) {
+          setLiveMarkets((prev) =>
+            prev.length === 0 ? [market] : prev,
+          );
+        }
+      })
+      .catch(() => {/* silently skip if backend not ready */});
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     const ws = getWsClient();
@@ -133,7 +150,7 @@ export function useSystemStats() {
 }
 
 /**
- * Hook to fetch active markets.
+ * Hook to fetch active markets list (DB-backed, for the Markets tab table).
  */
 export function useActiveMarkets() {
   const [markets, setMarkets] = useState<DiscoveredMarket[]>([]);
@@ -144,7 +161,7 @@ export function useActiveMarkets() {
     try {
       setLoading(true);
       const api = getApiClient();
-      const response = await api.getActiveMarkets();
+      const response = await api.getMarkets();
       setMarkets(response);
       setError(null);
     } catch (err) {
@@ -264,22 +281,39 @@ export function useAuditLogs(limit?: number) {
 }
 
 /**
- * Hook for WebSocket connection.
+ * Hook for WebSocket connection status.
+ * Sends a JSON ping to the backend every 15 s; isConnected flips to true
+ * only after receiving a pong, and resets to false if none arrives within 20 s.
  */
 export function useWsConnection() {
   const [isConnected, setIsConnected] = useState(false);
+  const pongTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const ws = getWsClient();
     ws.connect();
 
-    const checkConnection = () => setIsConnected(ws.isConnected());
-    checkConnection();
+    const resetPongTimeout = () => {
+      if (pongTimerRef.current) clearTimeout(pongTimerRef.current);
+      // If no pong within 20 s, mark disconnected
+      pongTimerRef.current = setTimeout(() => setIsConnected(false), 20_000);
+    };
 
-    const interval = setInterval(checkConnection, 10000);
+    // Listen for pong responses
+    const unsubPong = ws.on("pong", () => {
+      setIsConnected(true);
+      resetPongTimeout();
+    });
+
+    // Send ping now and every 15 s
+    const sendPing = () => ws.sendPing();
+    sendPing();
+    const pingInterval = setInterval(sendPing, 15_000);
 
     return () => {
-      clearInterval(interval);
+      unsubPong();
+      clearInterval(pingInterval);
+      if (pongTimerRef.current) clearTimeout(pongTimerRef.current);
     };
   }, []);
 

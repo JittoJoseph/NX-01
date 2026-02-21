@@ -5,6 +5,7 @@
 import type {
   SimulatedTrade,
   SystemStats,
+  LiveMarketInfo,
   DiscoveredMarket,
   ExperimentRun,
   PerformanceMetrics,
@@ -67,8 +68,19 @@ export class ApiClient {
     return fetchWithRetry(`${this.baseUrl}/ping`);
   }
 
+  async getActiveMarket(): Promise<LiveMarketInfo | null> {
+    const response = await fetch(`${this.baseUrl}/api/active-market`);
+    if (response.status === 204) return null;
+    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+    return response.json();
+  }
+
   async getActiveMarkets(): Promise<DiscoveredMarket[]> {
-    return fetchWithRetry(`${this.baseUrl}/api/active-market`);
+    return this.getMarkets();
+  }
+
+  async getMarkets(): Promise<DiscoveredMarket[]> {
+    return fetchWithRetry(`${this.baseUrl}/api/markets`);
   }
 
   async getSystemStats(): Promise<SystemStats> {
@@ -132,6 +144,8 @@ export class WsClient {
       this.ws.onopen = () => {
         this.reconnectAttempts = 0;
         this.isConnecting = false;
+        // Send initial ping immediately on connect
+        this.sendPing();
       };
 
       this.ws.onmessage = (event) => {
@@ -178,6 +192,13 @@ export class WsClient {
 
   isConnected(): boolean {
     return this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  /** Send a JSON ping to the backend. The backend replies with {type:"pong"}. */
+  sendPing(): void {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: "ping" }));
+    }
   }
 
   private emit(type: string, message: WsMessage): void {

@@ -201,7 +201,8 @@ export interface WsMessage {
     | "tradeOpened"
     | "tradeResolved"
     | "stopLossTriggered"
-    | "btcPriceUpdate";
+    | "btcPriceUpdate"
+    | "pong";
   data?: unknown;
 }
 

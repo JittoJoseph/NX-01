@@ -43,6 +43,20 @@ export class ApiServer {
     this.wss = new WebSocketServer({ server: this.server, path: "/ws" });
     this.wss.on("connection", (ws) => {
       logger.debug("Frontend WS client connected");
+
+      // Respond to application-level PING with PONG so the frontend can
+      // confirm true end-to-end WS connectivity.
+      ws.on("message", (raw) => {
+        try {
+          const msg = JSON.parse(raw.toString()) as { type?: string };
+          if (msg.type === "ping") {
+            ws.send(JSON.stringify({ type: "pong", ts: Date.now() }));
+          }
+        } catch {
+          // ignore non-JSON (e.g. raw PING frames)
+        }
+      });
+
       ws.on("close", () => logger.debug("Frontend WS client disconnected"));
     });
 
@@ -151,13 +165,25 @@ export class ApiServer {
       }
     });
 
-    // Active markets — return recent markets with computed status
-    // ACTIVE = endDate > now, ENDED = endDate <= now
-    this.app.get("/api/active-market", async (_req, res) => {
+    // Active market — returns the single currently-trading market window.
+    // Sources from the orchestrator's in-memory live market state so it includes
+    // real-time prices and btcPriceAtWindowStart. Returns 204 if none is active yet.
+    this.app.get("/api/active-market", (_req, res) => {
+      const orchestrator = getMarketOrchestrator();
+      const liveMarkets = orchestrator.getLiveMarkets();
+      const active = liveMarkets.find((m) => m.status === "ACTIVE");
+      if (!active) {
+        res.status(204).end();
+        return;
+      }
+      res.json(active);
+    });
+
+    // Markets list — full DB-backed list of recent discovered markets.
+    this.app.get("/api/markets", async (_req, res) => {
       try {
         const db = getDb();
         const now = new Date();
-        // Look back up to 30 minutes for recently ended markets
         const cutoff = new Date(Date.now() - 30 * 60_000).toISOString();
         const markets = await db
           .select()
@@ -171,7 +197,6 @@ export class ApiServer {
           .orderBy(desc(schema.markets.endDate))
           .limit(30);
 
-        // Add computed status field
         const nowMs = now.getTime();
         const enriched = markets.map((m) => {
           const endMs = m.endDate ? new Date(m.endDate).getTime() : 0;
@@ -184,8 +209,8 @@ export class ApiServer {
 
         res.json(enriched);
       } catch (error) {
-        logger.error({ error }, "Active markets error");
-        res.status(500).json({ error: "Failed to get active markets" });
+        logger.error({ error }, "Markets list error");
+        res.status(500).json({ error: "Failed to get markets" });
       }
     });
 
