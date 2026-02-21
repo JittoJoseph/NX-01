@@ -112,14 +112,17 @@ export function TradesTable({
             const pnlPositive = realizedPnl >= 0;
 
             // P&L percentages
-            const realizedPnlPct = usdAmount > 0 ? (realizedPnl / usdAmount) * 100 : 0;
+            const realizedPnlPct =
+              usdAmount > 0 ? (realizedPnl / usdAmount) * 100 : 0;
             const unrealizedPnlPct =
               unrealizedPnl !== null && usdAmount > 0
                 ? (unrealizedPnl / usdAmount) * 100
                 : null;
 
             // Window label
-            const endDate = trade.marketId ? (marketEndDates[trade.marketId] ?? null) : null;
+            const endDate = trade.marketId
+              ? (marketEndDates[trade.marketId] ?? null)
+              : null;
             const windowInfo = extractTimeWindow(trade, endDate);
 
             return (
@@ -209,14 +212,18 @@ export function TradesTable({
                           pnlPositive ? "text-emerald-500" : "text-red-500"
                         }`}
                       >
-                        {pnlPositive ? "+" : "-"}${Math.abs(realizedPnl).toFixed(4)}
+                        {pnlPositive ? "+" : "-"}$
+                        {Math.abs(realizedPnl).toFixed(4)}
                       </span>
                       <span
                         className={`text-[10px] tabular-nums ${
-                          pnlPositive ? "text-emerald-500/60" : "text-red-500/60"
+                          pnlPositive
+                            ? "text-emerald-500/60"
+                            : "text-red-500/60"
                         }`}
                       >
-                        {realizedPnlPct >= 0 ? "+" : ""}{realizedPnlPct.toFixed(2)}%
+                        {realizedPnlPct >= 0 ? "+" : ""}
+                        {realizedPnlPct.toFixed(2)}%
                       </span>
                     </div>
                   ) : unrealizedPnl !== null ? (
@@ -228,7 +235,8 @@ export function TradesTable({
                             : "text-red-400"
                         }`}
                       >
-                        {unrealizedPnl >= 0 ? "+" : "-"}${Math.abs(unrealizedPnl).toFixed(4)}
+                        {unrealizedPnl >= 0 ? "+" : "-"}$
+                        {Math.abs(unrealizedPnl).toFixed(4)}
                       </span>
                       {unrealizedPnlPct !== null && (
                         <span
@@ -238,7 +246,8 @@ export function TradesTable({
                               : "text-red-400/60"
                           }`}
                         >
-                          {unrealizedPnlPct >= 0 ? "+" : ""}{unrealizedPnlPct.toFixed(2)}%
+                          {unrealizedPnlPct >= 0 ? "+" : ""}
+                          {unrealizedPnlPct.toFixed(2)}%
                         </span>
                       )}
                       <span className="text-[9px] text-muted-foreground/50 font-mono">
@@ -299,8 +308,11 @@ function extractTimeWindow(
     const endDate = new Date(marketEndDate);
     const refDate = endDate; // use end date as the day reference
     return {
-      time: `↓ ${fmtTime(endDate)}${label ? ` · ${label}` : ""}`,
-      date: refDate.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+      time: `${fmtTime(endDate)}${label ? ` · ${label}` : ""}`,
+      date: refDate.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+      }),
     };
   }
 
@@ -308,6 +320,9 @@ function extractTimeWindow(
   const entryDate = new Date(trade.entryTs);
   return {
     time: `${fmtTime(entryDate)}${label ? ` · ${label}` : ""}`,
-    date: entryDate.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+    date: entryDate.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+    }),
   };
 }
