@@ -80,7 +80,7 @@ interface OpenPosition {
  *   3. StrategyEngine evaluates entry conditions on every price update
  *   4. On opportunity: ExecutionSimulator fills a limit buy, trade is persisted
  *   5. After market ends: monitor for resolution via WS + polling
- *   6. Resolve trades as WIN/LOSS/STOP_LOSS
+ *   6. Resolve trades as WIN/LOSS via oracle resolution
  */
 export class MarketOrchestrator extends EventEmitter {
   private scanner: MarketScanner;
@@ -93,7 +93,6 @@ export class MarketOrchestrator extends EventEmitter {
   private openPositions: Map<string, OpenPosition> = new Map();
   private resolutionTimers: Map<string, ReturnType<typeof setInterval>> =
     new Map();
-  private stopLossTimer: ReturnType<typeof setInterval> | null = null;
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
   private running = false;
@@ -137,9 +136,6 @@ export class MarketOrchestrator extends EventEmitter {
     this.wsWatcher.start();
     await this.scanner.start();
 
-    // Start stop-loss monitor (checks during resolution window)
-    this.startStopLossMonitor();
-
     // Start periodic cleanup of expired markets without positions (every 10s)
     this.cleanupTimer = setInterval(() => this.cleanupExpiredMarkets(), 10_000);
 
@@ -150,11 +146,6 @@ export class MarketOrchestrator extends EventEmitter {
     this.running = false;
     this.scanner.stop();
     this.wsWatcher.stop();
-
-    if (this.stopLossTimer) {
-      clearInterval(this.stopLossTimer);
-      this.stopLossTimer = null;
-    }
 
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
@@ -209,6 +200,9 @@ export class MarketOrchestrator extends EventEmitter {
 
   getLiveMarkets() {
     const now = Date.now();
+    const windowDurationMs =
+      WINDOW_CONFIGS[getConfig().strategy.marketWindow]?.durationMs ??
+      5 * 60_000;
     return Array.from(this.activeMarkets.values())
       .filter((m) => !m.resolved)
       .sort((a, b) => a.endDate.getTime() - b.endDate.getTime())
@@ -216,14 +210,24 @@ export class MarketOrchestrator extends EventEmitter {
         const hasPosition = Array.from(this.openPositions.values()).some(
           (p) => p.marketId === m.marketId,
         );
-        const status: "ACTIVE" | "ENDED" =
-          m.endDate.getTime() > now ? "ACTIVE" : "ENDED";
+        const windowStartMs = m.endDate.getTime() - windowDurationMs;
+        // Three-state status:
+        //   UPCOMING  — window has not yet opened (price to beat unknown)
+        //   ACTIVE    — window is currently open (trading live)
+        //   ENDED     — window closed, awaiting oracle resolution
+        const status: "ACTIVE" | "ENDED" | "UPCOMING" =
+          m.endDate.getTime() <= now
+            ? "ENDED"
+            : windowStartMs <= now
+              ? "ACTIVE"
+              : "UPCOMING";
 
         return {
           marketId: m.marketId,
           question: m.question,
           slug: m.slug,
           endDate: m.endDate.toISOString(),
+          windowStart: new Date(windowStartMs).toISOString(),
           yesTokenId: m.yesTokenId,
           noTokenId: m.noTokenId,
           prices: { ...m.lastPrices },
@@ -261,28 +265,29 @@ export class MarketOrchestrator extends EventEmitter {
       this.onMarketResolved(ev),
     );
 
-    // BTC price → lazily fill btcPriceAtWindowStart for any market registered before
-    //              the first BTC price arrived (unavoidable race on cold start).
-    //              Prefer buffer lookup at the exact windowStart timestamp so the
-    //              value matches Polymarket's oracle snapshot.
+    // BTC price → lazily fill btcPriceAtWindowStart for markets whose window had
+    //              not yet opened when they were first discovered, and for any
+    //              cold-start race. Only fire once the BTC tick timestamp is at or
+    //              after the window-open second so we match Polymarket's oracle.
     this.btcWatcher.on("btcPriceUpdate", (data: BtcPriceData) => {
       const windowDurationMs =
         WINDOW_CONFIGS[getConfig().strategy.marketWindow]?.durationMs ??
         5 * 60_000;
       for (const state of this.activeMarkets.values()) {
-        if (state.btcPriceAtWindowStart === null) {
-          const windowStartMs = state.endDate.getTime() - windowDurationMs;
-          const buffered = this.btcWatcher.getPriceAt(windowStartMs);
-          state.btcPriceAtWindowStart = buffered ?? data.price;
-          logger.info(
-            {
-              marketId: state.marketId,
-              btcPrice: state.btcPriceAtWindowStart,
-              source: buffered !== null ? "buffer" : "current-tick",
-            },
-            "btcPriceAtWindowStart set lazily after first BTC tick",
-          );
-        }
+        if (state.btcPriceAtWindowStart !== null) continue;
+        const windowStartMs = state.endDate.getTime() - windowDurationMs;
+        // Don't fill until the window has actually opened.
+        if (data.timestamp < windowStartMs) continue;
+        const buffered = this.btcWatcher.getPriceAt(windowStartMs);
+        state.btcPriceAtWindowStart = buffered ?? data.price;
+        logger.info(
+          {
+            marketId: state.marketId,
+            btcPrice: state.btcPriceAtWindowStart,
+            source: buffered !== null ? "buffer" : "current-tick",
+          },
+          "btcPriceAtWindowStart set lazily",
+        );
       }
     });
 
@@ -333,19 +338,21 @@ export class MarketOrchestrator extends EventEmitter {
       return;
     }
 
-    // Capture the Chainlink BTC/USD price at the exact moment this window opened.
-    // windowStart = endDate - windowDuration (deterministic from the market data).
-    // We look it up from the rolling price-history buffer so we match what
-    // Polymarket's oracle snapshotted, rather than using the slightly-stale
-    // getCurrentPrice() which reflects when our scanner discovered the market.
+    // Capture the Chainlink BTC/USD price at the exact window-open second.
+    // For pre-discovered future windows (window hasn't started yet) we leave
+    // this null — using the current live price would be wrong. The btcPriceUpdate
+    // lazy fill (wireEvents) will set it once the first tick after windowStart
+    // arrives, using the history buffer to pinpoint the exact oracle snapshot.
     const windowDurationMs =
       WINDOW_CONFIGS[getConfig().strategy.marketWindow]?.durationMs ??
       5 * 60_000;
     const windowStartMs = endDate.getTime() - windowDurationMs;
     const btcPriceAtWindowStart =
-      this.btcWatcher.getPriceAt(windowStartMs) ??
-      this.btcWatcher.getCurrentPrice()?.price ??
-      null;
+      windowStartMs <= Date.now()
+        ? (this.btcWatcher.getPriceAt(windowStartMs) ??
+           this.btcWatcher.getCurrentPrice()?.price ??
+           null)
+        : null;
 
     const state: ActiveMarketState = {
       marketId: market.id,
@@ -446,9 +453,6 @@ export class MarketOrchestrator extends EventEmitter {
       bestAsk,
       this.btcWatcher.getCurrentPrice(),
     );
-
-    // Check stop-loss on open positions
-    this.checkStopLoss(ev.tokenId, mid);
   }
 
   /**
@@ -787,69 +791,7 @@ export class MarketOrchestrator extends EventEmitter {
     this.cleanupMarket(marketId);
   }
 
-  /**
-   * Stop-loss monitor: periodically checks open positions during resolution window.
-   */
-  private startStopLossMonitor(): void {
-    this.stopLossTimer = setInterval(() => {
-      // Stop-loss monitoring happens via checkStopLoss on each price update
-    }, 5000);
-  }
 
-  private async checkStopLoss(
-    tokenId: string,
-    currentMidpoint: number,
-  ): Promise<void> {
-    const config = getConfig();
-
-    for (const [tradeId, pos] of this.openPositions) {
-      if (pos.tokenId !== tokenId) continue;
-
-      // Only apply stop-loss after market has ended (during resolution window)
-      if (Date.now() < pos.marketEndDate.getTime()) continue;
-
-      if (currentMidpoint <= config.stopLoss.threshold) {
-        const pnl = calculateLossAmount(
-          pos.entryPrice,
-          pos.entryShares,
-          pos.fees,
-        );
-
-        const resolvedTrade = await resolveTrade(
-          tradeId,
-          "STOP_LOSS",
-          pnl.toFixed(6),
-          currentMidpoint.toFixed(6),
-        );
-
-        await logAudit("warn", "STOP_LOSS", `Stop-loss on trade ${tradeId}`, {
-          tradeId,
-          exitPrice: currentMidpoint,
-          pnl,
-        });
-
-        this.openPositions.delete(tradeId);
-        this.strategyEngine.setOpenPositionCount(this.openPositions.size);
-
-        logger.warn(
-          {
-            tradeId,
-            marketId: pos.marketId,
-            exitPrice: currentMidpoint,
-            pnl: pnl.toFixed(4),
-          },
-          "⚠️ Stop-loss triggered",
-        );
-
-        this.emit("stopLossTriggered", {
-          tradeId,
-          pnl,
-          exitPrice: currentMidpoint,
-          trade: resolvedTrade,
-        });
-      }
-    }
-  }
 
   /**
    * Force-resolve expired positions after resolution watch period.

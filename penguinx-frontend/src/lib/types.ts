@@ -53,10 +53,13 @@ export interface LiveMarketInfo {
   question: string;
   slug: string | null;
   endDate: string; // ISO string
+  /** ISO string for when this market's price window opens (endDate - windowDuration) */
+  windowStart: string;
   yesTokenId: string;
   noTokenId: string;
   prices: Record<string, LiveMarketPrice>;
-  status: "ACTIVE" | "ENDED";
+  /** ACTIVE = window open; UPCOMING = window not yet started; ENDED = awaiting resolution */
+  status: "ACTIVE" | "ENDED" | "UPCOMING";
   hasPosition: boolean;
   /** BTC price captured when the market window opened — the "price to beat" for Up/Down markets */
   btcPriceAtWindowStart: number | null;

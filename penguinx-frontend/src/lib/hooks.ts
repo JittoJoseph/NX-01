@@ -112,7 +112,9 @@ export function useLiveMarkets(): LiveMarketInfo[] {
 
     const unsub = ws.on("systemState", (msg: WsMessage) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const incoming = (msg.data as any)?.liveMarkets as LiveMarketInfo[] | undefined;
+      const incoming = (msg.data as any)?.liveMarkets as
+        | LiveMarketInfo[]
+        | undefined;
       if (!incoming) return;
       setLiveMarkets((prev) =>
         incoming.map((m) => {

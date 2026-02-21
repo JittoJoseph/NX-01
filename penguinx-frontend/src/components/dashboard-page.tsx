@@ -60,14 +60,16 @@ export function DashboardPage() {
     }, []),
   );
 
-  // Primary live market: soonest-expiring ACTIVE window
+  // Primary live market: soonest-expiring ACTIVE window, or next UPCOMING if none open
   const primaryMarket = useMemo(() => {
-    const active = liveMarkets
-      .filter((m) => m.status === "ACTIVE")
-      .sort(
-        (a, b) => new Date(a.endDate).getTime() - new Date(b.endDate).getTime(),
-      );
-    return active[0] ?? liveMarkets[0] ?? null;
+    const byEnd = (a: { endDate: string }, b: { endDate: string }) =>
+      new Date(a.endDate).getTime() - new Date(b.endDate).getTime();
+    const active = liveMarkets.filter((m) => m.status === "ACTIVE").sort(byEnd);
+    if (active.length > 0) return active[0]!;
+    const upcoming = liveMarkets
+      .filter((m) => m.status === "UPCOMING")
+      .sort(byEnd);
+    return upcoming[0] ?? liveMarkets[0] ?? null;
   }, [liveMarkets]);
 
   // Markets pending resolution (ENDED but still has open position)
@@ -137,7 +139,9 @@ export function DashboardPage() {
           primaryMarket={primaryMarket}
           positionMarkets={positionMarkets}
           activeMarketsCount={
-            liveMarkets.filter((m) => m.status === "ACTIVE").length
+            liveMarkets.filter(
+              (m) => m.status === "ACTIVE" || m.status === "UPCOMING",
+            ).length
           }
           windowLabel={windowLabel}
           refetchMarkets={refetchMarkets}
@@ -487,10 +491,18 @@ function TopDashboardSection({
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <div
-                className={`w-1.5 h-1.5 rounded-full ${primaryMarket ? "bg-emerald-500 animate-pulse" : "bg-muted-foreground/30"}`}
+                className={`w-1.5 h-1.5 rounded-full ${
+                  primaryMarket?.status === "ACTIVE"
+                    ? "bg-emerald-500 animate-pulse"
+                    : primaryMarket?.status === "UPCOMING"
+                      ? "bg-amber-500/70"
+                      : "bg-muted-foreground/30"
+                }`}
               />
               <span className="text-[10px] font-mono tracking-[0.18em] text-muted-foreground">
-                ACTIVE MARKET
+                {primaryMarket?.status === "UPCOMING"
+                  ? "UPCOMING MARKET"
+                  : "ACTIVE MARKET"}
               </span>
             </div>
             {primaryMarket && (

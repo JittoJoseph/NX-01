@@ -165,18 +165,20 @@ export class ApiServer {
       }
     });
 
-    // Active market — returns the single currently-trading market window.
-    // Sources from the orchestrator's in-memory live market state so it includes
-    // real-time prices and btcPriceAtWindowStart. Returns 204 if none is active yet.
+    // Active market — returns the primary market (ACTIVE window preferred,
+    // UPCOMING as fallback). Sources from in-memory orchestrator state so it
+    // includes real-time prices and btcPriceAtWindowStart. Returns 204 if none.
     this.app.get("/api/active-market", (_req, res) => {
       const orchestrator = getMarketOrchestrator();
       const liveMarkets = orchestrator.getLiveMarkets();
-      const active = liveMarkets.find((m) => m.status === "ACTIVE");
-      if (!active) {
+      const primary =
+        liveMarkets.find((m) => m.status === "ACTIVE") ??
+        liveMarkets.find((m) => m.status === "UPCOMING");
+      if (!primary) {
         res.status(204).end();
         return;
       }
-      res.json(active);
+      res.json(primary);
     });
 
     // Markets list — full DB-backed list of recent discovered markets.

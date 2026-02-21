@@ -93,9 +93,19 @@ export function TradesTable({
             const exitCents =
               exitPrice !== null ? Math.round(exitPrice * 100) : null;
 
-            // Live price for open trades
+            // After market endDate passes, CLOB prices are noise (awaiting oracle
+            // resolution). Don't show a live price that would look like a loss.
+            const marketEndDate =
+              isOpen && trade.marketId && marketEndDates[trade.marketId]
+                ? new Date(marketEndDates[trade.marketId]!)
+                : null;
+            const marketHasEnded =
+              marketEndDate !== null &&
+              marketEndDate.getTime() <= Date.now();
+
+            // Live price for open trades — only while window is still open
             const livePrice =
-              isOpen && trade.tokenId
+              isOpen && !marketHasEnded && trade.tokenId
                 ? (livePrices[trade.tokenId] ?? null)
                 : null;
             const liveMid = livePrice?.mid ?? null;
@@ -168,7 +178,11 @@ export function TradesTable({
 
                 {/* EXIT */}
                 <td className="py-3 px-3 text-right">
-                  {exitCents !== null ? (
+                  {isOpen && marketHasEnded ? (
+                    <span className="text-[10px] font-mono text-amber-500/80 px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/20">
+                      PENDING
+                    </span>
+                  ) : exitCents !== null ? (
                     <span
                       className={`tabular-nums font-medium ${
                         exitCents >= entryCents
