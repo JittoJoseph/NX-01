@@ -3,10 +3,10 @@
 import { useState, useCallback, useEffect, useMemo } from "react";
 import { Header } from "./header";
 import { SystemStatusIndicator } from "./system-status-indicator";
-import { OverviewPanels } from "./overview-panels";
 import { TradesTable } from "./trades-table";
 import { TradeDetailPopup } from "./trade-detail-popup";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { RefreshCw, ExternalLink } from "lucide-react";
 import {
   useTrades,
   useSystemStats,
@@ -49,7 +49,6 @@ export function DashboardPage() {
     loading: marketsLoading,
     refetch: refetchMarkets,
   } = useActiveMarkets();
-  const { performance } = usePerformance("ALL");
 
   // Real-time market prices from WS systemState broadcast
   const liveMarkets = useLiveMarkets();
@@ -112,7 +111,7 @@ export function DashboardPage() {
 
       <main className="flex-1 px-4 py-4 pb-16 max-w-7xl mx-auto w-full space-y-4">
         {/* ── Command Center Panel ────────────── */}
-        <BtcStatusPanel
+        <TopDashboardSection
           stats={stats}
           btcPrice={currentBtcPrice}
           primaryMarket={primaryMarket}
@@ -123,12 +122,8 @@ export function DashboardPage() {
           openTradesCount={openTrades.length}
           windowLabel={windowLabel}
           mounted={mounted}
-          performance={performance}
           refetchMarkets={refetchMarkets}
         />
-
-        {/* ── Performance overview ──────── */}
-        <OverviewPanels />
 
         {/* ── Two-column: Trades + Sidebar ─────────── */}
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
@@ -296,7 +291,7 @@ function polymarketMarketUrl(market: DiscoveredMarket): string {
   return `https://polymarket.com/market/${market.id}`;
 }
 
-function BtcStatusPanel({
+function TopDashboardSection({
   stats,
   btcPrice,
   primaryMarket,
@@ -305,7 +300,6 @@ function BtcStatusPanel({
   openTradesCount,
   windowLabel,
   mounted,
-  performance,
   refetchMarkets,
 }: {
   stats: SystemStats | null;
@@ -316,16 +310,19 @@ function BtcStatusPanel({
   openTradesCount: number;
   windowLabel: string;
   mounted: boolean;
-  performance: import("@/lib/types").PerformanceMetrics | null;
   refetchMarkets: () => void;
 }) {
-  const isRunning = stats?.orchestrator.running ?? false;
+  const [period, setPeriod] = useState<"1D" | "1W" | "1M" | "ALL">("ALL");
+  const {
+    performance,
+    refreshing,
+    refetch: refetchPerformance,
+  } = usePerformance(period);
+
   const isPaused = stats?.orchestrator.paused ?? false;
 
-  // Countdown to primary market end
   const countdown = useCountdown(primaryMarket?.endDate ?? null);
 
-  // Auto-refetch markets when countdown expires
   useEffect(() => {
     if (countdown?.expired) {
       const timer = setTimeout(() => refetchMarkets(), 2000);
@@ -333,7 +330,6 @@ function BtcStatusPanel({
     }
   }, [countdown?.expired, refetchMarkets]);
 
-  // Live UP / DOWN prices from primary market
   const upPrice = primaryMarket
     ? (primaryMarket.prices[primaryMarket.yesTokenId]?.mid ?? null)
     : null;
@@ -355,271 +351,483 @@ function BtcStatusPanel({
   };
 
   const netPnl = parseFloat(performance?.totalPnl || "0");
+  const roi = parseFloat(performance?.roi || "0");
   const winRate = parseFloat(performance?.winRate || "0");
-  const totalTrades = performance
-    ? performance.wins + performance.losses + performance.stopLosses
-    : 0;
+  const totalInvested = parseFloat(performance?.totalInvested || "0");
+  const unrealizedPnl = parseFloat(performance?.unrealizedPnl || "0");
+  const realizedPnl = netPnl - unrealizedPnl;
+  const wins = performance?.wins || 0;
+  const losses = performance?.losses || 0;
+  const stopLosses = performance?.stopLosses || 0;
+  const totalLosses = losses + stopLosses;
+  const closedPositions = wins + totalLosses;
+  const openPositions = performance?.openPositions || 0;
+  const bestTrade = parseFloat(performance?.largestWin || "0");
+  const worstTrade = parseFloat(performance?.largestLoss || "0");
+  const avgWin = parseFloat(performance?.avgWin || "0");
+  const avgLoss = parseFloat(performance?.avgLoss || "0");
+  const profitFactor = avgLoss !== 0 ? Math.abs(avgWin / avgLoss) : 0;
+
+  const windowType = stats?.config?.marketWindow || "15M";
+
+  const marketDetails = useMemo(() => {
+    if (!primaryMarket) return null;
+    const question = primaryMarket.question;
+    // Extract target price: look for $XX,XXX or $XX,XXX.XX
+    const priceMatch = question.match(/\$([0-9,]+(\.[0-9]+)?)/);
+    const targetPriceStr = priceMatch ? priceMatch[0] : null;
+    const targetPriceNum = priceMatch
+      ? parseFloat(priceMatch[1].replace(/,/g, ""))
+      : null;
+
+    const end = new Date(primaryMarket.endDate);
+    const windowMinMap: Record<string, number> = {
+      "5M": 5,
+      "15M": 15,
+      "30M": 30,
+      "1H": 60,
+      "4H": 240,
+      "1D": 1440,
+    };
+    const mins = windowMinMap[windowType] ?? 15;
+    const start = new Date(end.getTime() - mins * 60000);
+    const fmt = (d: Date) =>
+      d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+    // Direction from question: look for "above" / "higher" vs "below" / "lower"
+    const qLower = question.toLowerCase();
+    const isAbove =
+      qLower.includes("above") ||
+      qLower.includes("higher") ||
+      qLower.includes("over");
+    const isBelow =
+      qLower.includes("below") ||
+      qLower.includes("lower") ||
+      qLower.includes("under");
+
+    return {
+      targetPriceStr,
+      targetPriceNum,
+      startTime: fmt(start),
+      endTime: fmt(end),
+      windowLabel:
+        mins >= 60
+          ? mins >= 1440
+            ? "1D window"
+            : `${mins / 60}H window`
+          : `${mins}M window`,
+      direction: isAbove ? "above" : isBelow ? "below" : null,
+    };
+  }, [primaryMarket, windowType]);
+
+  // BTC price distance from target
+  const btcDistanceInfo = useMemo(() => {
+    if (!marketDetails?.targetPriceNum || !btcPrice) return null;
+    const dist = btcPrice.price - marketDetails.targetPriceNum;
+    return {
+      dist: Math.abs(dist),
+      above: dist >= 0,
+    };
+  }, [marketDetails, btcPrice]);
+
+  const fmtUsd = (n: number) =>
+    n.toLocaleString("en-US", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
 
   return (
-    <div className="border border-border/30 rounded-lg bg-card/30 overflow-hidden">
-      {/* Active market question strip */}
-      <div className="flex items-center gap-2 px-4 py-2 border-b border-border/20 bg-card/20 min-h-[32px]">
-        {primaryMarket ? (
-          <>
-            <span
-              className={`inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                primaryMarket.status === "ACTIVE"
-                  ? "bg-emerald-500 animate-pulse"
-                  : "bg-amber-500"
-              }`}
-            />
-            <span className="text-xs font-mono text-muted-foreground truncate flex-1">
-              {primaryMarket.question}
-            </span>
-            <span
-              className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded ${
-                primaryMarket.status === "ACTIVE"
-                  ? "bg-emerald-500/10 text-emerald-500"
-                  : "bg-amber-500/10 text-amber-500"
-              }`}
-            >
-              {primaryMarket.status}
-            </span>
-          </>
-        ) : (
-          <span className="text-xs font-mono text-muted-foreground/50">
-            Waiting for active market…
-          </span>
-        )}
-      </div>
-
-      {/* Paused banner */}
+    <div className="border border-border/30 rounded-xl bg-background overflow-hidden">
       {isPaused && (
-        <div className="flex items-center justify-center gap-2 px-4 py-2 bg-red-500/10 border-b border-red-500/20">
-          <span className="text-xs font-mono font-bold text-red-400">
+        <div className="flex items-center justify-center gap-2 px-4 py-1.5 bg-red-500/10 border-b border-red-500/20">
+          <span className="text-[11px] font-mono font-bold text-red-400 tracking-widest">
             SYSTEM PAUSED — RESTART REQUIRED
           </span>
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 p-4">
-        {/* ── LEFT: BTC PRICE + COUNTDOWN ── */}
-        <div className="col-span-1 lg:col-span-4 flex flex-col gap-3">
-          {/* BTC Price */}
-          <div className="bg-gradient-to-br from-card/40 to-card/20 rounded-xl border border-border/20 p-4 flex flex-col items-center relative overflow-hidden flex-1">
-            <div className="absolute inset-0 bg-gradient-to-r from-amber-500/5 via-transparent to-blue-500/5" />
-            <div className="relative z-10 text-center">
-              <div className="flex items-center justify-center gap-2 mb-1">
-                <div
-                  className={`w-2 h-2 rounded-full ${
-                    btcPrice
-                      ? "bg-emerald-500 animate-pulse shadow-emerald-500/50 shadow-lg"
-                      : "bg-muted-foreground/40"
-                  }`}
-                />
-                <span className="text-xs font-mono tracking-widest text-muted-foreground font-medium">
-                  BTC/USDT
-                </span>
-              </div>
-              <div className="text-3xl lg:text-4xl font-bold font-mono tabular-nums mb-1 text-foreground">
-                {btcPrice
-                  ? `$${btcPrice.price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                  : "—"}
-              </div>
-              <div className="text-xs font-mono text-muted-foreground tracking-wider">
-                {windowLabel}
-              </div>
-            </div>
-          </div>
-
-          {/* Countdown timer — prominent */}
-          <div
-            className={`rounded-lg border p-3 flex items-center justify-between ${
-              countdown &&
-              !countdown.expired &&
-              countdown.hours === 0 &&
-              countdown.minutes < 1
-                ? "border-red-500/40 bg-red-500/10"
-                : countdown?.expired
-                  ? "border-amber-500/40 bg-amber-500/10"
-                  : "border-border/20 bg-card/20"
-            }`}
-          >
-            <div className="text-xs font-mono text-muted-foreground">
-              {countdown?.expired ? "⏱ ENDED" : "⏱ CLOSES IN"}
-            </div>
-            <div
-              className={`text-xl font-bold font-mono tabular-nums ${
-                countdown?.expired
-                  ? "text-amber-400"
-                  : countdown && countdown.hours === 0 && countdown.minutes < 1
-                    ? "text-red-400 animate-pulse"
-                    : "text-foreground"
-              }`}
-            >
-              {fmtCountdown()}
-            </div>
-          </div>
-        </div>
-
-        {/* ── CENTER: UP/DOWN + POSITIONS ── */}
-        <div className="col-span-1 lg:col-span-4 flex flex-col gap-3">
-          {/* UP / DOWN buttons */}
-          <div className="flex flex-col gap-2">
-            <a
-              href={primaryMarket ? polymarketUrl(primaryMarket) : undefined}
-              target="_blank"
-              rel="noopener noreferrer"
-              className={`flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg border transition-colors ${
-                upPrice !== null
-                  ? "border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 cursor-pointer"
-                  : "border-border/20 bg-card/20 opacity-50 cursor-default pointer-events-none"
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <span className="text-lg leading-none">▲</span>
-                <span className="text-xs font-mono font-bold text-emerald-400">
-                  UP
-                </span>
-              </div>
-              <span className="text-lg font-bold font-mono tabular-nums text-emerald-400">
-                {fmtPct(upPrice)}
-              </span>
-            </a>
-
-            <a
-              href={primaryMarket ? polymarketUrl(primaryMarket) : undefined}
-              target="_blank"
-              rel="noopener noreferrer"
-              className={`flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg border transition-colors ${
-                downPrice !== null
-                  ? "border-red-500/40 bg-red-500/10 hover:bg-red-500/20 cursor-pointer"
-                  : "border-border/20 bg-card/20 opacity-50 cursor-default pointer-events-none"
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <span className="text-lg leading-none">▼</span>
-                <span className="text-xs font-mono font-bold text-red-400">
-                  DOWN
-                </span>
-              </div>
-              <span className="text-lg font-bold font-mono tabular-nums text-red-400">
-                {fmtPct(downPrice)}
-              </span>
-            </a>
-          </div>
-
-          {/* Active positions count + pending resolutions */}
-          <div className="grid grid-cols-2 gap-2">
-            <div className="bg-card/20 rounded-lg p-2.5 border border-border/20">
-              <div className="text-[10px] font-mono text-muted-foreground mb-0.5">
-                OPEN POSITIONS
-              </div>
-              <div className="text-lg font-bold font-mono tabular-nums text-foreground">
-                {openTradesCount}
-              </div>
-            </div>
-            <div className="bg-card/20 rounded-lg p-2.5 border border-border/20">
-              <div className="text-[10px] font-mono text-muted-foreground mb-0.5">
-                ACTIVE MARKETS
-              </div>
-              <div className="text-lg font-bold font-mono tabular-nums text-foreground">
-                {activeMarketsCount}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* ── RIGHT: PNL, WIN RATE, ENGINE, LINK ── */}
-        <div className="col-span-1 lg:col-span-4 flex flex-col gap-2">
-          {/* PNL + Win rate row */}
-          <div className="grid grid-cols-2 gap-2">
-            <div className="bg-card/20 rounded-lg p-2.5 border border-border/20">
-              <div className="text-[10px] font-mono text-muted-foreground mb-0.5">
-                NET P&L
-              </div>
+      {/* Main two-panel layout */}
+      <div className="flex flex-col xl:flex-row divide-y xl:divide-y-0 xl:divide-x divide-border/30">
+        {/* ── LEFT: ACTIVE MARKET ── */}
+        <div className="xl:w-[420px] xl:shrink-0 p-5 flex flex-col gap-4">
+          {/* Header */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
               <div
-                className={`text-base font-bold font-mono tabular-nums ${
-                  netPnl > 0.0001
-                    ? "text-emerald-500"
-                    : netPnl < -0.0001
-                      ? "text-red-500"
-                      : "text-foreground"
-                }`}
+                className={`w-1.5 h-1.5 rounded-full ${primaryMarket ? "bg-emerald-500 animate-pulse" : "bg-muted-foreground/30"}`}
+              />
+              <span className="text-[10px] font-mono tracking-[0.18em] text-muted-foreground">
+                ACTIVE MARKET
+              </span>
+            </div>
+            {primaryMarket && (
+              <a
+                href={polymarketUrl(primaryMarket)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[10px] font-mono text-muted-foreground/50 hover:text-blue-400 flex items-center gap-1 transition-colors"
               >
-                {netPnl >= 0 ? "+" : ""}${netPnl.toFixed(4)}
-              </div>
-            </div>
-            <div className="bg-card/20 rounded-lg p-2.5 border border-border/20">
-              <div className="text-[10px] font-mono text-muted-foreground mb-0.5">
-                WIN RATE
-              </div>
-              <div className="text-base font-bold font-mono tabular-nums text-foreground">
-                {totalTrades > 0 ? `${winRate.toFixed(1)}%` : "—"}
-              </div>
-            </div>
+                polymarket <ExternalLink size={9} />
+              </a>
+            )}
           </div>
 
-          {/* Trades summary */}
-          <div className="bg-card/20 rounded-lg p-2.5 border border-border/20">
-            <div className="flex justify-between items-center">
-              <span className="text-[10px] font-mono text-muted-foreground">
-                TOTAL TRADES
-              </span>
-              <span className="text-sm font-bold font-mono tabular-nums text-foreground">
-                {totalTrades > 0
-                  ? `${performance?.wins}W / ${performance?.losses}L`
-                  : "—"}
-              </span>
-            </div>
-          </div>
-
-          {/* Engine status */}
-          <div className="bg-card/20 rounded-lg p-2 border border-border/20 flex items-center justify-between">
-            <div className="text-xs font-mono text-muted-foreground">
-              ENGINE
-            </div>
-            <div
-              className={`text-sm font-bold font-mono ${
-                isPaused
-                  ? "text-red-500"
-                  : isRunning
-                    ? "text-emerald-500"
-                    : "text-red-500"
-              }`}
-            >
-              {isPaused ? "PAUSED" : isRunning ? "RUNNING" : "STOPPED"}
-            </div>
-          </div>
-
-          {/* Polymarket link */}
           {primaryMarket ? (
-            <a
-              href={polymarketUrl(primaryMarket)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-blue-500/30 bg-blue-500/10 hover:bg-blue-500/20 transition-colors text-xs font-mono font-bold text-blue-400"
-            >
-              <span>↗</span>
-              <span>POLYMARKET</span>
-            </a>
-          ) : null}
+            <>
+              {/* Question */}
+              <p className="text-sm font-mono text-foreground/80 leading-relaxed">
+                {primaryMarket.question}
+              </p>
+
+              {/* Meta tags row */}
+              <div className="flex flex-wrap gap-1.5">
+                {marketDetails?.windowLabel && (
+                  <span className="text-[10px] font-mono text-muted-foreground border border-border/30 rounded px-2 py-0.5">
+                    {marketDetails.windowLabel}
+                  </span>
+                )}
+                {marketDetails?.startTime && (
+                  <span className="text-[10px] font-mono text-muted-foreground border border-border/30 rounded px-2 py-0.5">
+                    {marketDetails.startTime} → {marketDetails.endTime}
+                  </span>
+                )}
+                {marketDetails?.direction && (
+                  <span
+                    className={`text-[10px] font-mono border rounded px-2 py-0.5 ${marketDetails.direction === "above" ? "text-emerald-500 border-emerald-500/30" : "text-red-500 border-red-500/30"}`}
+                  >
+                    {marketDetails.direction}
+                  </span>
+                )}
+              </div>
+
+              {/* Price to beat vs current BTC */}
+              <div className="border border-border/30 rounded-lg overflow-hidden">
+                <div className="grid grid-cols-2 divide-x divide-border/30">
+                  <div className="p-3">
+                    <div className="text-[10px] font-mono text-muted-foreground mb-1 tracking-widest">
+                      PRICE TO BEAT
+                    </div>
+                    <div className="text-base font-bold font-mono tabular-nums text-foreground">
+                      {marketDetails?.targetPriceStr ?? "—"}
+                    </div>
+                  </div>
+                  <div className="p-3">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <div
+                        className={`w-1 h-1 rounded-full ${btcPrice ? "bg-emerald-500 animate-pulse" : "bg-muted-foreground/30"}`}
+                      />
+                      <span className="text-[10px] font-mono text-muted-foreground tracking-widest">
+                        BTC NOW
+                      </span>
+                    </div>
+                    <div className="text-base font-bold font-mono tabular-nums text-foreground">
+                      {btcPrice ? `$${fmtUsd(btcPrice.price)}` : "—"}
+                    </div>
+                  </div>
+                </div>
+                {btcDistanceInfo && (
+                  <div className="border-t border-border/30 px-3 py-1.5 flex items-center gap-2">
+                    <span className="text-[10px] font-mono text-muted-foreground">
+                      DISTANCE
+                    </span>
+                    <span
+                      className={`text-[10px] font-mono font-bold tabular-nums ${btcDistanceInfo.above ? "text-emerald-500" : "text-red-500"}`}
+                    >
+                      {btcDistanceInfo.above ? "+" : "-"}$
+                      {fmtUsd(btcDistanceInfo.dist)}
+                    </span>
+                    <span className="text-[10px] font-mono text-muted-foreground/50 ml-auto">
+                      BTC is {btcDistanceInfo.above ? "above" : "below"} target
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {/* Timer + odds */}
+              <div className="grid grid-cols-3 gap-2">
+                <div className="col-span-1 border border-border/30 rounded-lg p-3 flex flex-col items-center justify-center text-center">
+                  <div className="text-[10px] font-mono text-muted-foreground mb-1 tracking-widest">
+                    {countdown?.expired ? "ENDED" : "CLOSES"}
+                  </div>
+                  <div
+                    className={`text-lg font-bold font-mono tabular-nums tracking-tight leading-none ${countdown?.expired ? "text-amber-400" : countdown && countdown.hours === 0 && countdown.minutes < 1 ? "text-red-400 animate-pulse" : "text-foreground"}`}
+                  >
+                    {fmtCountdown()}
+                  </div>
+                </div>
+                <div className="border border-emerald-500/20 bg-emerald-500/5 rounded-lg p-3 flex flex-col items-center justify-center text-center">
+                  <div className="text-[10px] font-mono text-emerald-500/60 mb-1">
+                    UP ▲
+                  </div>
+                  <div className="text-base font-bold font-mono tabular-nums text-emerald-400">
+                    {fmtPct(upPrice)}
+                  </div>
+                </div>
+                <div className="border border-red-500/20 bg-red-500/5 rounded-lg p-3 flex flex-col items-center justify-center text-center">
+                  <div className="text-[10px] font-mono text-red-500/60 mb-1">
+                    DOWN ▼
+                  </div>
+                  <div className="text-base font-bold font-mono tabular-nums text-red-400">
+                    {fmtPct(downPrice)}
+                  </div>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="flex-1 flex items-center justify-center text-xs font-mono text-muted-foreground/40 py-8">
+              Waiting for active market…
+            </div>
+          )}
+        </div>
+
+        {/* ── RIGHT: PORTFOLIO PERFORMANCE ── */}
+        <div className="flex-1 flex flex-col">
+          {/* Section header */}
+          <div className="flex items-center justify-between px-5 py-3 border-b border-border/20">
+            <div className="flex items-center gap-3">
+              <span className="text-[10px] font-mono tracking-[0.18em] text-muted-foreground">
+                PORTFOLIO PERFORMANCE
+              </span>
+              <span className="text-[10px] font-mono text-muted-foreground/40">
+                [{period}]
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="flex border border-border/20 rounded overflow-hidden">
+                {(["1D", "1W", "1M", "ALL"] as const).map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => setPeriod(p)}
+                    className={`text-[10px] font-mono px-2.5 py-1 transition-colors ${period === p ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                  >
+                    {p}
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={() => refetchPerformance()}
+                disabled={refreshing}
+                className="p-1 text-muted-foreground hover:text-foreground disabled:opacity-40 transition-colors"
+              >
+                <RefreshCw
+                  size={11}
+                  className={refreshing ? "animate-spin" : ""}
+                />
+              </button>
+            </div>
+          </div>
+
+          {/* Flat column layout — separated by vertical dividers */}
+          <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-border/20">
+            {/* Col 1: P&L */}
+            <div className="p-5 space-y-4">
+              <div>
+                <div className="text-[10px] font-mono text-muted-foreground tracking-widest mb-1">
+                  NET P&L
+                </div>
+                <div
+                  className={`text-3xl font-bold font-mono tabular-nums tracking-tight ${netPnl >= 0 ? "text-emerald-500" : "text-red-500"}`}
+                >
+                  {netPnl >= 0 ? "+" : "-"}${Math.abs(netPnl).toFixed(4)}
+                </div>
+                <div
+                  className={`text-xs font-mono mt-1 ${roi >= 0 ? "text-emerald-500/70" : "text-red-500/70"}`}
+                >
+                  {roi >= 0 ? "+" : ""}
+                  {roi.toFixed(2)}% ROI
+                </div>
+              </div>
+              <div className="space-y-3 pt-1">
+                <div>
+                  <div className="text-[10px] font-mono text-muted-foreground tracking-widest mb-0.5">
+                    REALIZED
+                  </div>
+                  <div
+                    className={`text-sm font-bold font-mono tabular-nums ${realizedPnl >= 0 ? "text-emerald-500" : "text-red-500"}`}
+                  >
+                    {realizedPnl >= 0 ? "+" : "-"}$
+                    {Math.abs(realizedPnl).toFixed(4)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] font-mono text-muted-foreground tracking-widest mb-0.5">
+                    UNREALIZED
+                  </div>
+                  <div
+                    className={`text-sm font-bold font-mono tabular-nums ${unrealizedPnl >= 0 ? "text-emerald-500" : "text-red-500"}`}
+                  >
+                    {unrealizedPnl >= 0 ? "+" : "-"}$
+                    {Math.abs(unrealizedPnl).toFixed(4)}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Col 2: Capital + Win rate */}
+            <div className="p-5 space-y-4">
+              <div>
+                <div className="text-[10px] font-mono text-muted-foreground tracking-widest mb-0.5">
+                  CAPITAL
+                </div>
+                <div className="text-2xl font-bold font-mono tabular-nums text-foreground">
+                  ${totalInvested.toFixed(2)}
+                </div>
+                <div className="text-[10px] font-mono text-muted-foreground/50 mt-0.5">
+                  total invested
+                </div>
+              </div>
+
+              <div className="space-y-2 pt-1">
+                <div className="text-[10px] font-mono text-muted-foreground tracking-widest">
+                  TRADE STATISTICS
+                </div>
+                <div className="flex items-end justify-between">
+                  <span className="text-[10px] font-mono text-muted-foreground">
+                    WIN RATE
+                  </span>
+                  <span className="text-base font-bold font-mono tabular-nums text-foreground">
+                    {winRate.toFixed(1)}%
+                  </span>
+                </div>
+                <div className="h-1 w-full rounded-full overflow-hidden flex bg-red-500/20">
+                  <div
+                    className="h-full bg-emerald-500 transition-all"
+                    style={{ width: `${winRate}%` }}
+                  />
+                </div>
+                <div className="flex justify-between text-[10px] font-mono">
+                  <span className="text-red-500/70">{totalLosses} losses</span>
+                  <span className="text-emerald-500/70">{wins} wins</span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3 pt-1">
+                {[
+                  ["OPEN", openPositions],
+                  ["CLOSED", closedPositions],
+                  ["TOTAL", openPositions + closedPositions],
+                ].map(([label, val]) => (
+                  <div key={label as string}>
+                    <div className="text-[10px] font-mono text-muted-foreground mb-0.5">
+                      {label}
+                    </div>
+                    <div className="text-sm font-bold font-mono tabular-nums text-foreground">
+                      {val}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Col 3: Best / Worst */}
+            <div className="p-5 space-y-4">
+              <div className="text-[10px] font-mono text-muted-foreground tracking-widest">
+                PERFORMANCE
+              </div>
+              <div>
+                <div className="text-[10px] font-mono text-muted-foreground mb-0.5">
+                  BEST TRADE
+                </div>
+                <div className="text-lg font-bold font-mono tabular-nums text-emerald-500">
+                  +${bestTrade.toFixed(4)}
+                </div>
+                <div className="text-[10px] font-mono text-muted-foreground/50 mt-0.5">
+                  avg win: +${avgWin.toFixed(4)}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] font-mono text-muted-foreground mb-0.5">
+                  WORST TRADE
+                </div>
+                <div className="text-lg font-bold font-mono tabular-nums text-red-500">
+                  {worstTrade < 0 ? "-" : ""}${Math.abs(worstTrade).toFixed(4)}
+                </div>
+                <div className="text-[10px] font-mono text-muted-foreground/50 mt-0.5">
+                  avg loss: -${Math.abs(avgLoss).toFixed(4)}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] font-mono text-muted-foreground mb-0.5">
+                  PROFIT FACTOR
+                </div>
+                <div className="text-lg font-bold font-mono tabular-nums text-foreground">
+                  {profitFactor.toFixed(2)}
+                </div>
+                <div className="text-[10px] font-mono text-muted-foreground/50 mt-0.5">
+                  avg win ÷ avg loss
+                </div>
+              </div>
+            </div>
+
+            {/* Col 4: System + breakdown */}
+            <div className="p-5 space-y-4">
+              <div className="text-[10px] font-mono text-muted-foreground tracking-widest">
+                SYSTEM
+              </div>
+              <div>
+                <div className="text-[10px] font-mono text-muted-foreground mb-0.5">
+                  ENGINE
+                </div>
+                <div
+                  className={`text-sm font-bold font-mono ${isPaused ? "text-red-500" : stats?.orchestrator.running ? "text-emerald-500" : "text-red-500"}`}
+                >
+                  {isPaused
+                    ? "PAUSED"
+                    : stats?.orchestrator.running
+                      ? "RUNNING"
+                      : "STOPPED"}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] font-mono text-muted-foreground mb-0.5">
+                  OPEN POSITIONS
+                </div>
+                <div className="text-sm font-bold font-mono tabular-nums text-foreground">
+                  {stats?.orchestrator.openPositions ?? openTradesCount}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] font-mono text-muted-foreground mb-0.5">
+                  ACTIVE MARKETS
+                </div>
+                <div className="text-sm font-bold font-mono tabular-nums text-foreground">
+                  {activeMarketsCount}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] font-mono text-muted-foreground mb-0.5">
+                  STOP LOSSES
+                </div>
+                <div className="text-sm font-bold font-mono tabular-nums text-amber-500">
+                  {stopLosses}
+                </div>
+              </div>
+              <div>
+                <div className="text-[10px] font-mono text-muted-foreground mb-0.5">
+                  WINDOW
+                </div>
+                <div className="text-sm font-bold font-mono text-foreground">
+                  {windowLabel}
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Pending resolution strip — markets that ended but have open positions */}
+      {/* Pending resolution strip */}
       {positionMarkets.length > 0 && (
-        <div className="border-t border-border/20 px-4 py-2 bg-amber-500/5">
-          <div className="text-[10px] font-mono text-amber-400 mb-1 tracking-wider">
+        <div className="border-t border-border/20 px-5 py-2 flex items-center gap-3">
+          <span className="text-[10px] font-mono text-amber-400 tracking-wider whitespace-nowrap">
             AWAITING RESOLUTION
-          </div>
-          <div className="flex flex-wrap gap-2">
+          </span>
+          <div className="flex flex-wrap gap-1.5">
             {positionMarkets.map((m) => (
               <span
                 key={m.marketId}
-                className="text-[10px] font-mono text-muted-foreground bg-card/30 rounded px-2 py-0.5 border border-amber-500/20"
+                className="text-[10px] font-mono text-muted-foreground border border-amber-500/20 rounded px-2 py-0.5"
               >
-                {m.question?.slice(0, 40) ?? m.marketId.slice(0, 12)}…
+                {m.question?.slice(0, 36) ?? m.marketId.slice(0, 12)}…
               </span>
             ))}
           </div>
