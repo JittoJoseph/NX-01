@@ -1,0 +1,239 @@
+"use client";
+
+import type { SimulatedTrade } from "@/lib/types";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+
+interface TradeDetailPopupProps {
+  trade: SimulatedTrade | null;
+  open: boolean;
+  onClose: () => void;
+}
+
+export function TradeDetailPopup({
+  trade,
+  open,
+  onClose,
+}: TradeDetailPopupProps) {
+  if (!trade) return null;
+
+  const isClosed = trade.status === "CLOSED";
+  const entryPrice = parseFloat(trade.entryPrice);
+  const entryFees = parseFloat(trade.entryFees || "0");
+  const entrySlippage = parseFloat(trade.entrySlippage || "0");
+  const pnl = parseFloat(trade.realizedPnl || "0");
+  const exitPrice = trade.claimPrice ? parseFloat(trade.claimPrice) : null;
+
+  return (
+    <Dialog open={open} onOpenChange={onClose}>
+      <DialogContent className="max-w-lg font-mono bg-background border-border">
+        <DialogHeader>
+          <DialogTitle className="text-sm font-bold tracking-wider">
+            TRADE DETAIL
+          </DialogTitle>
+        </DialogHeader>
+
+        <div className="space-y-4 text-xs">
+          {/* Market info */}
+          <Section title="MARKET">
+            <Row label="Question" value={trade.market?.question || "—"} wide />
+            <Row
+              label="Token ID"
+              value={trade.tokenId ? trade.tokenId.slice(0, 20) + "…" : "—"}
+            />
+            <Row
+              label="Market ID"
+              value={trade.marketId ? trade.marketId.slice(0, 20) + "…" : "—"}
+            />
+            <Row
+              label="Outcome"
+              value={trade.outcomeLabel || trade.market?.outcome || "—"}
+            />
+            {trade.experimentId && (
+              <Row label="Experiment" value={trade.experimentId.toString()} />
+            )}
+          </Section>
+
+          {/* Pricing */}
+          <Section title="PRICING">
+            <Row label="Entry Price" value={`$${entryPrice.toFixed(6)}`} />
+            <Row
+              label="Shares"
+              value={parseFloat(trade.entryShares).toFixed(4)}
+            />
+            <Row
+              label="USD Amount"
+              value={`$${parseFloat(trade.simulatedUsdAmount).toFixed(4)}`}
+            />
+          </Section>
+
+          {/* Result info */}
+          <Section title="RESULT">
+            <Row
+              label="Status"
+              value={
+                <span
+                  className={
+                    isClosed
+                      ? pnl >= 0
+                        ? "text-emerald-500"
+                        : "text-red-500"
+                      : "text-blue-500"
+                  }
+                >
+                  {isClosed ? "CLOSED" : "ACTIVE"}
+                </span>
+              }
+            />
+            {trade.claimOutcome && (
+              <Row
+                label="Outcome"
+                value={
+                  <span
+                    className={
+                      trade.claimOutcome === "WIN"
+                        ? "text-emerald-500"
+                        : "text-red-500"
+                    }
+                  >
+                    {trade.claimOutcome}
+                  </span>
+                }
+              />
+            )}
+            {exitPrice !== null && (
+              <Row label="Exit Price" value={`$${exitPrice.toFixed(6)}`} />
+            )}
+            {isClosed && (
+              <Row
+                label="Realized PnL"
+                value={
+                  <span
+                    className={
+                      pnl > 0
+                        ? "text-emerald-500"
+                        : pnl < 0
+                          ? "text-red-500"
+                          : "text-muted-foreground"
+                    }
+                  >
+                    {pnl >= 0 ? "+" : ""}${pnl.toFixed(4)}
+                  </span>
+                }
+              />
+            )}
+          </Section>
+
+          {/* Execution quality */}
+          <Section title="EXECUTION QUALITY">
+            <Row label="Entry Fees" value={`$${entryFees.toFixed(6)}`} />
+            <Row
+              label="Entry Slippage"
+              value={`${(entrySlippage * 100).toFixed(3)}%`}
+            />
+            <Row
+              label="Entry Latency"
+              value={trade.entryLatencyMs ? `${trade.entryLatencyMs}ms` : "—"}
+            />
+            <Row
+              label="Fill Status"
+              value={
+                <span
+                  className={
+                    trade.fillStatus === "FULL"
+                      ? "text-emerald-500"
+                      : trade.fillStatus === "PARTIAL"
+                        ? "text-amber-500"
+                        : "text-red-500"
+                  }
+                >
+                  {trade.fillStatus || "—"}
+                </span>
+              }
+            />
+          </Section>
+
+          {/* Strategy */}
+          <Section title="STRATEGY">
+            <Row
+              label="Strategy Trigger"
+              value={trade.strategyTrigger || "—"}
+            />
+          </Section>
+
+          {/* Timestamps */}
+          <Section title="TIMESTAMPS">
+            <Row
+              label="Opened"
+              value={new Date(trade.entryTs).toLocaleString()}
+            />
+            {trade.claimTs && (
+              <Row
+                label="Closed"
+                value={new Date(trade.claimTs).toLocaleString()}
+              />
+            )}
+            {trade.claimTs && (
+              <Row
+                label="Duration"
+                value={formatDuration(trade.entryTs, trade.claimTs)}
+              />
+            )}
+          </Section>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function Section({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <div className="text-[10px] text-muted-foreground tracking-widest border-b border-border/30 pb-1 mb-2">
+        {title}
+      </div>
+      <div className="space-y-1">{children}</div>
+    </div>
+  );
+}
+
+function Row({
+  label,
+  value,
+  wide,
+}: {
+  label: string;
+  value: React.ReactNode;
+  wide?: boolean;
+}) {
+  return (
+    <div
+      className={`flex ${wide ? "flex-col gap-0.5" : "justify-between items-center"}`}
+    >
+      <span className="text-muted-foreground">{label}</span>
+      <span className="text-foreground">{value}</span>
+    </div>
+  );
+}
+
+function formatDuration(start: string, end: string): string {
+  const diffMs = new Date(end).getTime() - new Date(start).getTime();
+  const secs = Math.floor(diffMs / 1000);
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ${secs % 60}s`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ${mins % 60}m`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ${hrs % 24}h`;
+}

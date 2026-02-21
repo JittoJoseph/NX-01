@@ -1,0 +1,48 @@
+services:
+  # Local PostgreSQL for development
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: penguinx
+      POSTGRES_PASSWORD: penguinx_dev
+      POSTGRES_DB: penguinx
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U penguinx -d penguinx"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: .
+    ports:
+      - "${PORT:-4000}:4000"
+    environment:
+      - NODE_ENV=production
+      - NEON_DATABASE_URL=${NEON_DATABASE_URL}
+      - POLY_DATA_API_BASE=${POLY_DATA_API_BASE:-https://data-api.polymarket.com}
+      - POLY_GAMMA_API_BASE=${POLY_GAMMA_API_BASE:-https://gamma-api.polymarket.com}
+      - POLY_CLOB_BASE=${POLY_CLOB_BASE:-https://clob.polymarket.com}
+      - POLY_RTDS_WS=${POLY_RTDS_WS:-wss://ws-live-data.polymarket.com}
+      - POLY_CLOB_WS=${POLY_CLOB_WS:-wss://ws-subscriptions-clob.polymarket.com/ws/}
+      - POLL_INTERVAL_SECONDS=${POLL_INTERVAL_SECONDS:-15}
+      - POLL_MAX_BACKOFF_SECONDS=${POLL_MAX_BACKOFF_SECONDS:-300}
+      - TARGET_WALLET=${TARGET_WALLET:-0x6297b93ea37ff92a57fd636410f3b71ebf74517e}
+      - PORT=4000
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  postgres_data:
