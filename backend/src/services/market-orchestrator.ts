@@ -263,12 +263,23 @@ export class MarketOrchestrator extends EventEmitter {
 
     // BTC price → lazily fill btcPriceAtWindowStart for any market registered before
     //              the first BTC price arrived (unavoidable race on cold start).
+    //              Prefer buffer lookup at the exact windowStart timestamp so the
+    //              value matches Polymarket's oracle snapshot.
     this.btcWatcher.on("btcPriceUpdate", (data: BtcPriceData) => {
+      const windowDurationMs =
+        WINDOW_CONFIGS[getConfig().strategy.marketWindow]?.durationMs ??
+        5 * 60_000;
       for (const state of this.activeMarkets.values()) {
         if (state.btcPriceAtWindowStart === null) {
-          state.btcPriceAtWindowStart = data.price;
+          const windowStartMs = state.endDate.getTime() - windowDurationMs;
+          const buffered = this.btcWatcher.getPriceAt(windowStartMs);
+          state.btcPriceAtWindowStart = buffered ?? data.price;
           logger.info(
-            { marketId: state.marketId, btcPrice: data.price },
+            {
+              marketId: state.marketId,
+              btcPrice: state.btcPriceAtWindowStart,
+              source: buffered !== null ? "buffer" : "current-tick",
+            },
             "btcPriceAtWindowStart set lazily after first BTC tick",
           );
         }
@@ -322,10 +333,19 @@ export class MarketOrchestrator extends EventEmitter {
       return;
     }
 
-    // Capture current BTC price as the "price to beat" for relative Up/Down markets.
-    // For absolute price markets (above/below $X), targetPrice takes precedence.
+    // Capture the Chainlink BTC/USD price at the exact moment this window opened.
+    // windowStart = endDate - windowDuration (deterministic from the market data).
+    // We look it up from the rolling price-history buffer so we match what
+    // Polymarket's oracle snapshotted, rather than using the slightly-stale
+    // getCurrentPrice() which reflects when our scanner discovered the market.
+    const windowDurationMs =
+      WINDOW_CONFIGS[getConfig().strategy.marketWindow]?.durationMs ??
+      5 * 60_000;
+    const windowStartMs = endDate.getTime() - windowDurationMs;
     const btcPriceAtWindowStart =
-      this.btcWatcher.getCurrentPrice()?.price ?? null;
+      this.btcWatcher.getPriceAt(windowStartMs) ??
+      this.btcWatcher.getCurrentPrice()?.price ??
+      null;
 
     const state: ActiveMarketState = {
       marketId: market.id,

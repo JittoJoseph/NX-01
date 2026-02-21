@@ -26,10 +26,20 @@ export class BtcPriceWatcher extends EventEmitter {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
 
+  /**
+   * Rolling buffer of recent Chainlink BTC/USD ticks keyed by Unix-ms timestamp.
+   * Retained for HISTORY_TTL_MS so we can look up the exact Chainlink price at
+   * the moment a window opened (endDate - windowDuration), matching what
+   * Polymarket's oracle snapshots.
+   */
+  private priceHistory: Array<{ price: number; timestamp: number }> = [];
+
   /** Send TEXT "PING" every 5 s to keep RTDS connection alive (per docs). */
   private static readonly PING_INTERVAL = 5_000;
   private static readonly MAX_RECONNECT_DELAY = 30_000;
   private static readonly BASE_RECONNECT_DELAY = 1_000;
+  /** Keep 20 minutes of price history — covers up to the 15M window + scanner lag. */
+  private static readonly HISTORY_TTL_MS = 20 * 60 * 1_000;
 
   start(): void {
     if (this.running) return;
@@ -63,6 +73,25 @@ export class BtcPriceWatcher extends EventEmitter {
     return { price: this.currentPrice, timestamp: this.lastTimestamp };
   }
 
+  /**
+   * Return the last known BTC/USD Chainlink price at or before `targetMs`
+   * (Unix milliseconds).  This gives the value that Polymarket's oracle would
+   * have snapshotted for a window that opened at that instant.
+   *
+   * Returns null if the history buffer does not reach back that far.
+   */
+  getPriceAt(targetMs: number): number | null {
+    let best: { price: number; timestamp: number } | null = null;
+    for (const entry of this.priceHistory) {
+      if (entry.timestamp <= targetMs) {
+        if (best === null || entry.timestamp > best.timestamp) {
+          best = entry;
+        }
+      }
+    }
+    return best?.price ?? null;
+  }
+
   isConnected(): boolean {
     return this.ws?.readyState === WebSocket.OPEN;
   }
@@ -70,6 +99,20 @@ export class BtcPriceWatcher extends EventEmitter {
   private setPrice(price: number, timestamp: number): void {
     this.currentPrice = price;
     this.lastTimestamp = timestamp;
+
+    // Append to rolling history buffer and prune stale entries.
+    this.priceHistory.push({ price, timestamp });
+    const cutoff = Date.now() - BtcPriceWatcher.HISTORY_TTL_MS;
+    // Remove entries older than the TTL window (they accumulate at the front).
+    let pruneIdx = 0;
+    while (
+      pruneIdx < this.priceHistory.length &&
+      this.priceHistory[pruneIdx]!.timestamp < cutoff
+    ) {
+      pruneIdx++;
+    }
+    if (pruneIdx > 0) this.priceHistory = this.priceHistory.slice(pruneIdx);
+
     this.emit("btcPriceUpdate", {
       price,
       timestamp,
