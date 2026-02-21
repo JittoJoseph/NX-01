@@ -7,6 +7,7 @@ import {
   createSimulatedTrade,
   resolveTrade,
   logAudit,
+  loadOpenTradesWithMarkets,
 } from "../db/client.js";
 import * as schema from "../db/schema.js";
 import { eq, and } from "drizzle-orm";
@@ -88,8 +89,10 @@ export class MarketOrchestrator extends EventEmitter {
   private resolutionTimers: Map<string, ReturnType<typeof setInterval>> =
     new Map();
   private stopLossTimer: ReturnType<typeof setInterval> | null = null;
+  private cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
   private running = false;
+  private paused = false;
   private cycleCount = 0;
 
   constructor() {
@@ -132,6 +135,9 @@ export class MarketOrchestrator extends EventEmitter {
     // Start stop-loss monitor (checks during resolution window)
     this.startStopLossMonitor();
 
+    // Start periodic cleanup of expired markets without positions (every 10s)
+    this.cleanupTimer = setInterval(() => this.cleanupExpiredMarkets(), 10_000);
+
     logger.info("Market orchestrator fully started");
   }
 
@@ -145,6 +151,11 @@ export class MarketOrchestrator extends EventEmitter {
       this.stopLossTimer = null;
     }
 
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = null;
+    }
+
     for (const [marketId, timer] of this.resolutionTimers) {
       clearInterval(timer);
     }
@@ -153,9 +164,31 @@ export class MarketOrchestrator extends EventEmitter {
     logger.info("Market orchestrator stopped");
   }
 
+  /**
+   * Pause all trading activity. Used by the wipe endpoint.
+   * Stops scanner and strategy evaluation but keeps WS alive
+   * for any open position resolution. System won't resume until restart.
+   */
+  pause(): void {
+    this.paused = true;
+    this.scanner.stop();
+
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = null;
+    }
+
+    logger.warn("System paused — restart required to resume");
+  }
+
+  isPaused(): boolean {
+    return this.paused;
+  }
+
   getStats() {
     return {
       running: this.running,
+      paused: this.paused,
       activeMarkets: this.activeMarkets.size,
       openPositions: this.openPositions.size,
       cycleCount: this.cycleCount,
@@ -170,18 +203,29 @@ export class MarketOrchestrator extends EventEmitter {
   }
 
   getLiveMarkets() {
+    const now = Date.now();
     return Array.from(this.activeMarkets.values())
       .filter((m) => !m.resolved)
       .sort((a, b) => a.endDate.getTime() - b.endDate.getTime())
-      .map((m) => ({
-        marketId: m.marketId,
-        question: m.question,
-        slug: m.slug,
-        endDate: m.endDate.toISOString(),
-        yesTokenId: m.yesTokenId,
-        noTokenId: m.noTokenId,
-        prices: { ...m.lastPrices },
-      }));
+      .map((m) => {
+        const hasPosition = Array.from(this.openPositions.values()).some(
+          (p) => p.marketId === m.marketId,
+        );
+        const status: "ACTIVE" | "ENDED" =
+          m.endDate.getTime() > now ? "ACTIVE" : "ENDED";
+
+        return {
+          marketId: m.marketId,
+          question: m.question,
+          slug: m.slug,
+          endDate: m.endDate.toISOString(),
+          yesTokenId: m.yesTokenId,
+          noTokenId: m.noTokenId,
+          prices: { ...m.lastPrices },
+          status,
+          hasPosition,
+        };
+      });
   }
 
   private wireEvents(): void {
@@ -226,6 +270,7 @@ export class MarketOrchestrator extends EventEmitter {
    * Handle a newly discovered market from the scanner.
    */
   private async onNewMarket(market: any, event: any): Promise<void> {
+    if (this.paused) return;
     if (this.activeMarkets.has(market.id)) return;
 
     const tokenIds = PolymarketClient.parseClobTokenIds(market);
@@ -404,6 +449,8 @@ export class MarketOrchestrator extends EventEmitter {
    * Execute a simulated trade when the strategy detects an opportunity.
    */
   private async onOpportunity(opp: MarketOpportunity): Promise<void> {
+    if (this.paused) return;
+
     const config = getConfig();
 
     try {
@@ -789,23 +836,12 @@ export class MarketOrchestrator extends EventEmitter {
   }
 
   /**
-   * Load existing open trades from the database on startup.
+   * Load existing open trades from the database on startup (single JOIN query).
    */
   private async loadOpenPositions(): Promise<void> {
-    const db = getDb();
-    const openTrades = await db
-      .select()
-      .from(schema.simulatedTrades)
-      .where(eq(schema.simulatedTrades.status, "OPEN"));
+    const rows = await loadOpenTradesWithMarkets();
 
-    for (const trade of openTrades) {
-      // Get market end date
-      const [market] = await db
-        .select()
-        .from(schema.markets)
-        .where(eq(schema.markets.id, trade.marketId!))
-        .limit(1);
-
+    for (const { trade, marketEndDate } of rows) {
       this.openPositions.set(trade.id, {
         tradeId: trade.id,
         marketId: trade.marketId ?? "",
@@ -814,7 +850,7 @@ export class MarketOrchestrator extends EventEmitter {
         entryPrice: parseFloat(trade.entryPrice),
         entryShares: parseFloat(trade.entryShares),
         fees: parseFloat(trade.entryFees ?? "0"),
-        marketEndDate: market?.endDate ? new Date(market.endDate) : new Date(),
+        marketEndDate: marketEndDate ? new Date(marketEndDate) : new Date(),
       });
 
       // Set up resolution monitoring for existing positions
@@ -823,10 +859,46 @@ export class MarketOrchestrator extends EventEmitter {
 
     this.strategyEngine.setOpenPositionCount(this.openPositions.size);
 
-    if (openTrades.length > 0) {
+    if (rows.length > 0) {
       logger.info(
-        { count: openTrades.length },
+        { count: rows.length },
         "Loaded existing open positions from database",
+      );
+    }
+  }
+
+  /**
+   * Periodically remove expired markets that have no open positions.
+   * Markets with open positions are kept until those positions resolve.
+   */
+  private cleanupExpiredMarkets(): void {
+    const now = Date.now();
+    const toClean: string[] = [];
+
+    for (const [marketId, state] of this.activeMarkets) {
+      if (state.resolved) {
+        toClean.push(marketId);
+        continue;
+      }
+      // Keep active markets
+      if (state.endDate.getTime() > now) continue;
+      // Keep ended markets that have open positions
+      const hasPosition = Array.from(this.openPositions.values()).some(
+        (p) => p.marketId === marketId,
+      );
+      if (hasPosition) continue;
+      // Expired + no positions → safe to clean up
+      toClean.push(marketId);
+    }
+
+    for (const marketId of toClean) {
+      this.cleanupMarket(marketId);
+    }
+
+    if (toClean.length > 0) {
+      logger.debug(
+        { cleaned: toClean.length, remaining: this.activeMarkets.size },
+        "Cleaned up expired markets",
       );
     }
   }

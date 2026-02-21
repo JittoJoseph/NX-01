@@ -7,7 +7,7 @@ import {
   type GammaMarket,
 } from "../types/index.js";
 import { getPolymarketClient, PolymarketClient } from "./polymarket-client.js";
-import { upsertMarket } from "../db/client.js";
+import { insertMarketIfNew } from "../db/client.js";
 
 const logger = createModuleLogger("market-scanner");
 
@@ -16,10 +16,14 @@ const logger = createModuleLogger("market-scanner");
  *
  * Emits:
  *   "newMarket" — { market: GammaMarket, event: GammaEvent }
+ *
+ * Deduplication: tracks discovered market IDs in-memory so each market is
+ * emitted and written to the DB exactly once.
  */
 export class MarketScanner extends EventEmitter {
   private client: PolymarketClient;
   private scanInterval: ReturnType<typeof setInterval> | null = null;
+  private knownMarketIds: Set<string> = new Set();
   private discoveredCount = 0;
   private running = false;
 
@@ -89,9 +93,17 @@ export class MarketScanner extends EventEmitter {
         if (!this.isBtcWindowEvent(event, windowConfig)) continue;
 
         for (const market of event.markets ?? []) {
-          await this.catalogMarket(market, windowConfig);
-          newMarketsFound++;
-          this.emit("newMarket", { market, event });
+          // Skip markets we've already processed in a previous scan
+          if (this.knownMarketIds.has(market.id)) continue;
+
+          const wasNew = await this.catalogMarket(market, windowConfig);
+          this.knownMarketIds.add(market.id);
+
+          if (wasNew) {
+            newMarketsFound++;
+            this.discoveredCount++;
+            this.emit("newMarket", { market, event });
+          }
         }
       }
 
@@ -140,18 +152,19 @@ export class MarketScanner extends EventEmitter {
   }
 
   /**
-   * Catalog a discovered market into the database.
+   * Catalog a discovered market into the database (INSERT only, no UPDATE).
+   * Returns true if the market was truly new (inserted), false if it already existed.
    */
   private async catalogMarket(
     market: GammaMarket,
     windowConfig: (typeof WINDOW_CONFIGS)[keyof typeof WINDOW_CONFIGS],
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
       const tokenIds = PolymarketClient.parseClobTokenIds(market);
       const outcomes = PolymarketClient.parseOutcomes(market);
       const targetPrice = PolymarketClient.parseTargetPrice(market.question);
 
-      await upsertMarket(market.id, {
+      const wasNew = await insertMarketIfNew(market.id, {
         conditionId: market.conditionId,
         slug: market.slug ?? undefined,
         question: market.question ?? undefined,
@@ -165,9 +178,10 @@ export class MarketScanner extends EventEmitter {
         metadata: market,
       });
 
-      this.discoveredCount++;
+      return wasNew;
     } catch (error) {
       logger.error({ error, marketId: market.id }, "Failed to catalog market");
+      return false;
     }
   }
 }

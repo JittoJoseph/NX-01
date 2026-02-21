@@ -114,9 +114,7 @@ export class ApiServer {
 
   private setupRoutes(): void {
     // Health / ping
-    this.app.get("/ping", (_req, res) =>
-      res.json({ pong: true, ts: Date.now() }),
-    );
+    this.app.get("/ping", (_req, res) => res.json({ message: "pong" }));
     this.app.get("/health", (_req, res) => {
       const orchestrator = getMarketOrchestrator();
       const stats = orchestrator.getStats();
@@ -153,13 +151,14 @@ export class ApiServer {
       }
     });
 
-    // Active markets — only return markets whose trading window ends in the future
-    // (DB may contain old markets with active=true awaiting oracle settlement)
+    // Active markets — return recent markets with computed status
+    // ACTIVE = endDate > now, ENDED = endDate <= now
     this.app.get("/api/active-market", async (_req, res) => {
       try {
         const db = getDb();
-        // Allow up to 60 seconds in the past to account for clock skew / resolution lag
-        const cutoff = new Date(Date.now() - 60_000).toISOString();
+        const now = new Date();
+        // Look back up to 30 minutes for recently ended markets
+        const cutoff = new Date(Date.now() - 30 * 60_000).toISOString();
         const markets = await db
           .select()
           .from(schema.markets)
@@ -170,8 +169,20 @@ export class ApiServer {
             ),
           )
           .orderBy(desc(schema.markets.endDate))
-          .limit(20);
-        res.json(markets);
+          .limit(30);
+
+        // Add computed status field
+        const nowMs = now.getTime();
+        const enriched = markets.map((m) => {
+          const endMs = m.endDate ? new Date(m.endDate).getTime() : 0;
+          return {
+            ...m,
+            computedStatus:
+              endMs > nowMs ? ("ACTIVE" as const) : ("ENDED" as const),
+          };
+        });
+
+        res.json(enriched);
       } catch (error) {
         logger.error({ error }, "Active markets error");
         res.status(500).json({ error: "Failed to get active markets" });
@@ -257,7 +268,7 @@ export class ApiServer {
       }
     });
 
-    // Admin: wipe
+    // Admin: wipe — clears all DB data and pauses the system until restart
     this.app.delete("/api/admin/wipe", async (req: Request, res: Response) => {
       try {
         const config = getConfig();
@@ -267,14 +278,23 @@ export class ApiServer {
           return;
         }
 
+        // Pause the orchestrator first — stops scanner, halts new trades
+        const orchestrator = getMarketOrchestrator();
+        orchestrator.pause();
+
         const db = getDb();
         await db.delete(schema.simulatedTrades);
         await db.delete(schema.markets);
         await db.delete(schema.auditLogs);
         await db.delete(schema.experimentRuns);
 
-        logger.warn("Database wiped via admin endpoint");
-        res.json({ success: true, message: "All data wiped" });
+        logger.warn(
+          "Database wiped and system paused via admin endpoint — restart required",
+        );
+        res.json({
+          success: true,
+          message: "All data wiped. System paused — restart to resume.",
+        });
       } catch (error) {
         logger.error({ error }, "Wipe error");
         res.status(500).json({ error: "Wipe failed" });
@@ -301,10 +321,11 @@ export class ApiServer {
   private broadcastState(): void {
     const orchestrator = getMarketOrchestrator();
     const btcWatcher = getBtcPriceWatcher();
+    const stats = orchestrator.getStats();
     this.broadcast({
       type: "systemState",
       data: {
-        ...orchestrator.getStats(),
+        ...stats,
         liveMarkets: orchestrator.getLiveMarkets(),
         btcPrice: btcWatcher.getCurrentPrice(),
         timestamp: Date.now(),

@@ -56,6 +56,8 @@ export interface LiveMarketInfo {
   yesTokenId: string;
   noTokenId: string;
   prices: Record<string, LiveMarketPrice>;
+  status: "ACTIVE" | "ENDED";
+  hasPosition: boolean;
 }
 
 // ============================================
@@ -65,6 +67,7 @@ export interface LiveMarketInfo {
 export interface SystemStats {
   orchestrator: {
     running: boolean;
+    paused: boolean;
     activeMarkets: number;
     openPositions: number;
     cycleCount: number;
@@ -115,6 +118,8 @@ export interface DiscoveredMarket {
   lastFetchedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Computed by the API: ACTIVE (window open) or ENDED (window closed) */
+  computedStatus?: "ACTIVE" | "ENDED";
 }
 
 // ============================================

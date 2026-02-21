@@ -3,7 +3,7 @@ import postgres from "postgres";
 import { getConfig } from "../utils/config.js";
 import { createModuleLogger } from "../utils/logger.js";
 import * as schema from "./schema.js";
-import { eq, sql } from "drizzle-orm";
+import { eq, sql, and, inArray } from "drizzle-orm";
 
 const logger = createModuleLogger("database");
 
@@ -43,6 +43,58 @@ export async function disconnectDatabase(): Promise<void> {
 // Market helpers
 // ============================================
 
+/**
+ * Insert a market row only if it doesn't already exist.
+ * Uses INSERT … ON CONFLICT DO NOTHING so we never update existing rows
+ * just because the scanner re-discovered them.
+ * Returns `true` when a new row was actually inserted.
+ */
+export async function insertMarketIfNew(
+  id: string,
+  data: {
+    conditionId?: string;
+    slug?: string;
+    question?: string;
+    clobTokenIds?: string[];
+    outcomes?: string[];
+    windowType: string;
+    category: string;
+    endDate?: string | null;
+    targetPrice?: number | null;
+    active?: boolean;
+    metadata?: unknown;
+  },
+): Promise<boolean> {
+  const database = getDb();
+
+  const record = {
+    id,
+    conditionId: data.conditionId || null,
+    slug: data.slug || null,
+    question: data.question || null,
+    clobTokenIds: data.clobTokenIds as any,
+    outcomes: data.outcomes as any,
+    windowType: data.windowType,
+    category: data.category,
+    endDate: data.endDate || null,
+    targetPrice: data.targetPrice?.toString() ?? null,
+    active: data.active ?? true,
+    metadata: data.metadata as any,
+  };
+
+  const result = await database
+    .insert(schema.markets)
+    .values(record)
+    .onConflictDoNothing({ target: schema.markets.id })
+    .returning({ id: schema.markets.id });
+
+  return result.length > 0;
+}
+
+/**
+ * Full upsert — only used when we actually need to update a market row
+ * (e.g. during resolution or admin operations).
+ */
 export async function upsertMarket(
   id: string,
   data: {
@@ -95,6 +147,26 @@ export async function upsertMarket(
       .returning();
     return result[0];
   }
+}
+
+/**
+ * Load open trades with their market data in a single query (JOIN).
+ * Avoids N+1 queries during startup.
+ */
+export async function loadOpenTradesWithMarkets() {
+  const database = getDb();
+  const rows = await database
+    .select({
+      trade: schema.simulatedTrades,
+      marketEndDate: schema.markets.endDate,
+    })
+    .from(schema.simulatedTrades)
+    .leftJoin(
+      schema.markets,
+      eq(schema.simulatedTrades.marketId, schema.markets.id),
+    )
+    .where(eq(schema.simulatedTrades.status, "OPEN"));
+  return rows;
 }
 
 // ============================================
