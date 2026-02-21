@@ -8,6 +8,8 @@ interface TradesTableProps {
   loading: boolean;
   /** Real-time bid/ask/mid prices keyed by tokenId, refreshed every ~2s from WS */
   livePrices?: Record<string, LiveMarketPrice>;
+  /** Market end dates keyed by marketId — used for the WINDOW column end time */
+  marketEndDates?: Record<string, string>;
   onTradeClick?: (trade: SimulatedTrade) => void;
 }
 
@@ -15,6 +17,7 @@ export function TradesTable({
   trades,
   loading,
   livePrices = {},
+  marketEndDates = {},
   onTradeClick,
 }: TradesTableProps) {
   if (loading) {
@@ -116,7 +119,8 @@ export function TradesTable({
                 : null;
 
             // Window label
-            const windowInfo = extractTimeWindow(trade);
+            const endDate = trade.marketId ? (marketEndDates[trade.marketId] ?? null) : null;
+            const windowInfo = extractTimeWindow(trade, endDate);
 
             return (
               <tr
@@ -278,28 +282,32 @@ export function TradesTable({
 
 /* ─── Helpers ──────────────────────────────────────────────── */
 
-function extractTimeWindow(trade: SimulatedTrade): {
-  time: string;
-  date: string;
-} {
-  const entryDate = new Date(trade.entryTs);
+function extractTimeWindow(
+  trade: SimulatedTrade,
+  marketEndDate: string | null,
+): { time: string; date: string } {
   const windowType = trade.windowType as MarketWindow | null;
   const label = windowType
     ? (MARKET_WINDOW_LABELS[windowType] ?? windowType)
-    : "";
+    : null;
 
-  const fmt = (d: Date) =>
-    d.toLocaleTimeString("en-US", {
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    });
+  const fmtTime = (d: Date) =>
+    d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
+  // Prefer showing the market window END time (closes at)
+  if (marketEndDate) {
+    const endDate = new Date(marketEndDate);
+    const refDate = endDate; // use end date as the day reference
+    return {
+      time: `↓ ${fmtTime(endDate)}${label ? ` · ${label}` : ""}`,
+      date: refDate.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+    };
+  }
+
+  // Fallback: show entry time when end date isn't available
+  const entryDate = new Date(trade.entryTs);
   return {
-    time: `${fmt(entryDate)} ${label ? `(${label})` : ""}`.trim(),
-    date: entryDate.toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-    }),
+    time: `${fmtTime(entryDate)}${label ? ` · ${label}` : ""}`,
+    date: entryDate.toLocaleDateString("en-US", { month: "short", day: "numeric" }),
   };
 }

@@ -107,6 +107,14 @@ export function DashboardPage() {
     return trade?.btcPriceAtEntry ? parseFloat(trade.btcPriceAtEntry) : null;
   }, [primaryMarket, trades]);
 
+  // marketId → endDate lookup for the trades table WINDOW column
+  const marketEndDates = useMemo<Record<string, string>>(() => {
+    const map: Record<string, string> = {};
+    for (const m of liveMarkets) map[m.marketId] = m.endDate;
+    for (const m of markets) { if (m.id && m.endDate) map[m.id] = m.endDate; }
+    return map;
+  }, [liveMarkets, markets]);
+
   // Polymarket slug for the selected trade's market (for deep-linking in modal)
   const selectedTradeSlug = useMemo(() => {
     if (!selectedTrade) return null;
@@ -176,6 +184,7 @@ export function DashboardPage() {
                   trades={trades}
                   loading={tradesLoading}
                   livePrices={livePricesMap}
+                  marketEndDates={marketEndDates}
                   onTradeClick={setSelectedTrade}
                 />
               </TabsContent>
@@ -587,26 +596,24 @@ function TopDashboardSection({
               <div className="grid grid-cols-3 gap-2">
                 <div className="col-span-1 border border-border/30 rounded-lg p-3 flex flex-col items-center justify-center text-center gap-0.5">
                   <div className="text-[10px] font-mono text-muted-foreground tracking-widest">
-                    {countdown?.expired ? "ENDED" : "WINDOW"}
+                    {countdown?.expired ? "ENDED" : "CLOSES IN"}
                   </div>
                   <div
-                    className={`text-sm font-bold font-mono tabular-nums leading-none ${
-                      countdown?.expired ? "text-amber-400" : "text-foreground"
+                    className={`text-lg font-bold font-mono tabular-nums tracking-tight leading-none ${
+                      countdown?.expired
+                        ? "text-amber-400"
+                        : countdown &&
+                            countdown.hours === 0 &&
+                            countdown.minutes < 1
+                          ? "text-red-400 animate-pulse"
+                          : "text-foreground"
                     }`}
                   >
-                    {marketDetails?.endTime ?? "—"}
+                    {fmtCountdown()}
                   </div>
-                  {!countdown?.expired && (
-                    <div
-                      className={`text-[10px] font-mono tabular-nums ${
-                        countdown &&
-                        countdown.hours === 0 &&
-                        countdown.minutes < 1
-                          ? "text-red-400 animate-pulse"
-                          : "text-muted-foreground/50"
-                      }`}
-                    >
-                      {fmtCountdown()}
+                  {marketDetails?.endTime && (
+                    <div className="text-[10px] font-mono text-muted-foreground/40 tabular-nums">
+                      {marketDetails.endTime}
                     </div>
                   )}
                 </div>
