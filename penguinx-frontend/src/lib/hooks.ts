@@ -111,10 +111,20 @@ export function useLiveMarkets(): LiveMarketInfo[] {
     ws.connect();
 
     const unsub = ws.on("systemState", (msg: WsMessage) => {
-      const data = msg.data as SystemStats | undefined;
-      if (data?.liveMarkets) {
-        setLiveMarkets(data.liveMarkets);
-      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const incoming = (msg.data as any)?.liveMarkets as LiveMarketInfo[] | undefined;
+      if (!incoming) return;
+      setLiveMarkets((prev) =>
+        incoming.map((m) => {
+          // Preserve last-known prices when the WS update has none yet
+          // (happens briefly right after a market is first registered)
+          if (Object.keys(m.prices).length === 0) {
+            const existing = prev.find((p) => p.marketId === m.marketId);
+            return existing ? { ...m, prices: existing.prices } : m;
+          }
+          return m;
+        }),
+      );
     });
 
     return unsub;

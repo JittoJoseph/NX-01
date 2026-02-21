@@ -31,17 +31,12 @@ export function DashboardPage() {
   const [selectedTrade, setSelectedTrade] = useState<SimulatedTrade | null>(
     null,
   );
-  const [mounted, setMounted] = useState(false);
   const [btcPrice, setBtcPrice] = useState<{
     price: number;
     timestamp: number;
   } | null>(null);
 
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
-  // Data hooks — trades are now fully WS-driven (no polling)
+  // Data hooks — trades are WS-driven; no polling
   const { trades, loading: tradesLoading } = useTrades(undefined, 100);
   const { stats, loading: statsLoading } = useSystemStats();
   const {
@@ -50,42 +45,38 @@ export function DashboardPage() {
     refetch: refetchMarkets,
   } = useActiveMarkets();
 
-  // Real-time market prices from WS systemState broadcast
+  // Real-time market state from WS
   const liveMarkets = useLiveMarkets();
-
-  // WebSocket live events
   useWsConnection();
 
-  // Update BTC price from systemState broadcasts
+  // BTC price from systemState WS broadcast
   useWsEvent(
     "systemState",
     useCallback((msg: any) => {
-      const data = msg?.data;
-      if (data?.btcPrice) {
-        setBtcPrice(data.btcPrice);
+      const d = msg?.data;
+      if (d?.btcPrice && typeof d.btcPrice === "object") {
+        setBtcPrice(d.btcPrice);
       }
     }, []),
   );
 
-  // Derive counts
-  const openTrades = useMemo(
-    () => trades.filter((t) => t.status === "OPEN"),
-    [trades],
-  );
-
-  // Primary live market: prefer the first ACTIVE market, otherwise first overall
+  // Primary live market: soonest-expiring ACTIVE window
   const primaryMarket = useMemo(() => {
-    const active = liveMarkets.find((m) => m.status === "ACTIVE");
-    return active ?? liveMarkets[0] ?? null;
+    const active = liveMarkets
+      .filter((m) => m.status === "ACTIVE")
+      .sort(
+        (a, b) => new Date(a.endDate).getTime() - new Date(b.endDate).getTime(),
+      );
+    return active[0] ?? liveMarkets[0] ?? null;
   }, [liveMarkets]);
 
-  // Markets with active positions (status ENDED but hasPosition)
+  // Markets pending resolution (ENDED but still has open position)
   const positionMarkets = useMemo(
     () => liveMarkets.filter((m) => m.status === "ENDED" && m.hasPosition),
     [liveMarkets],
   );
 
-  // Flat map of all live prices keyed by tokenId, for TradesTable real-time P&L
+  // Flat tokenId → price map for TradesTable real-time P&L
   const livePricesMap = useMemo<Record<string, LiveMarketPrice>>(() => {
     const map: Record<string, LiveMarketPrice> = {};
     for (const m of liveMarkets) {
@@ -96,31 +87,33 @@ export function DashboardPage() {
     return map;
   }, [liveMarkets]);
 
-  // Fallback BTC price at window start from the most recent open trade for this market
-  // (used when the BTC watcher hadn't received a price yet when the market was registered)
+  // Fallback: if btcPriceAtWindowStart is null, use the entry price from the most recent open trade for this market
   const btcPriceAtWindowStartFallback = useMemo(() => {
     const marketId = primaryMarket?.marketId;
     if (!marketId) return null;
     const trade = trades.find(
-      (t) => t.marketId === marketId && t.status === "OPEN" && !!t.btcPriceAtEntry,
+      (t) =>
+        t.marketId === marketId && t.status === "OPEN" && !!t.btcPriceAtEntry,
     );
     return trade?.btcPriceAtEntry ? parseFloat(trade.btcPriceAtEntry) : null;
   }, [primaryMarket, trades]);
 
-  // marketId → endDate lookup for the trades table WINDOW column
+  // marketId → endDate for trades table WINDOW column
   const marketEndDates = useMemo<Record<string, string>>(() => {
     const map: Record<string, string> = {};
     for (const m of liveMarkets) map[m.marketId] = m.endDate;
-    for (const m of markets) { if (m.id && m.endDate) map[m.id] = m.endDate; }
+    for (const m of markets) if (m.id && m.endDate) map[m.id] = m.endDate;
     return map;
   }, [liveMarkets, markets]);
 
-  // Polymarket slug for the selected trade's market (for deep-linking in modal)
+  // Polymarket slug for the selected trade (for deep-link in modal)
   const selectedTradeSlug = useMemo(() => {
     if (!selectedTrade) return null;
-    const liveMatch = liveMarkets.find((m) => m.marketId === selectedTrade.marketId);
-    if (liveMatch?.slug) return liveMatch.slug;
-    return markets.find((m) => m.id === selectedTrade.marketId)?.slug ?? null;
+    return (
+      liveMarkets.find((m) => m.marketId === selectedTrade.marketId)?.slug ??
+      markets.find((m) => m.id === selectedTrade.marketId)?.slug ??
+      null
+    );
   }, [selectedTrade, liveMarkets, markets]);
 
   // Determine window label from config
@@ -146,9 +139,7 @@ export function DashboardPage() {
           activeMarketsCount={
             liveMarkets.filter((m) => m.status === "ACTIVE").length
           }
-          openTradesCount={openTrades.length}
           windowLabel={windowLabel}
-          mounted={mounted}
           refetchMarkets={refetchMarkets}
           btcPriceAtWindowStartFallback={btcPriceAtWindowStartFallback}
         />
@@ -327,9 +318,7 @@ function TopDashboardSection({
   primaryMarket,
   positionMarkets,
   activeMarketsCount,
-  openTradesCount,
   windowLabel,
-  mounted,
   refetchMarkets,
   btcPriceAtWindowStartFallback,
 }: {
@@ -338,9 +327,7 @@ function TopDashboardSection({
   primaryMarket: LiveMarketInfo | null;
   positionMarkets: LiveMarketInfo[];
   activeMarketsCount: number;
-  openTradesCount: number;
   windowLabel: string;
-  mounted: boolean;
   refetchMarkets: () => void;
   btcPriceAtWindowStartFallback: number | null;
 }) {
@@ -404,7 +391,9 @@ function TopDashboardSection({
 
   // Effective BTC price at window start: use captured value or fall back to entry price from trade
   const effectiveBtcAtStart =
-    primaryMarket?.btcPriceAtWindowStart ?? btcPriceAtWindowStartFallback ?? null;
+    primaryMarket?.btcPriceAtWindowStart ??
+    btcPriceAtWindowStartFallback ??
+    null;
 
   const marketDetails = useMemo(() => {
     if (!primaryMarket) return null;
@@ -549,7 +538,9 @@ function TopDashboardSection({
                 <div className="grid grid-cols-2 divide-x divide-border/30">
                   <div className="p-3">
                     <div className="text-[10px] font-mono text-muted-foreground mb-1 tracking-widest">
-                      {effectiveBtcAtStart !== null ? "BTC AT START" : "PRICE TO BEAT"}
+                      {effectiveBtcAtStart !== null
+                        ? "BTC AT START"
+                        : "PRICE TO BEAT"}
                     </div>
                     <div className="text-base font-bold font-mono tabular-nums text-foreground">
                       {marketDetails?.targetPriceStr ?? "—"}
@@ -845,7 +836,7 @@ function TopDashboardSection({
                   OPEN POSITIONS
                 </div>
                 <div className="text-sm font-bold font-mono tabular-nums text-foreground">
-                  {stats?.orchestrator.openPositions ?? openTradesCount}
+                  {stats?.orchestrator.openPositions ?? 0}
                 </div>
               </div>
               <div>

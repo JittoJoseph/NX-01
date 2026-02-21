@@ -115,7 +115,11 @@ export function TradeDetailPopup({
           <Section title="BTC CONTEXT">
             <Row
               label="BTC at Entry"
-              value={btcAtEntry ? `$${btcAtEntry.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "—"}
+              value={
+                btcAtEntry
+                  ? `$${btcAtEntry.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                  : "—"
+              }
             />
             {btcTarget !== null && btcTarget > 0 && (
               <Row
@@ -124,10 +128,7 @@ export function TradeDetailPopup({
               />
             )}
             {btcDist !== null && btcDist > 0 && (
-              <Row
-                label="BTC Distance"
-                value={`$${btcDist.toFixed(2)}`}
-              />
+              <Row label="BTC Distance" value={`$${btcDist.toFixed(2)}`} />
             )}
           </Section>
 
