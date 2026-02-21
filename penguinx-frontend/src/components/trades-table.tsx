@@ -100,8 +100,7 @@ export function TradesTable({
                 ? new Date(marketEndDates[trade.marketId]!)
                 : null;
             const marketHasEnded =
-              marketEndDate !== null &&
-              marketEndDate.getTime() <= Date.now();
+              marketEndDate !== null && marketEndDate.getTime() <= Date.now();
 
             // Live price for open trades — only while window is still open
             const livePrice =
@@ -264,9 +263,6 @@ export function TradesTable({
                           {unrealizedPnlPct.toFixed(2)}%
                         </span>
                       )}
-                      <span className="text-[9px] text-muted-foreground/50 font-mono">
-                        unrealized
-                      </span>
                     </div>
                   ) : (
                     <span className="text-muted-foreground/40">—</span>

@@ -350,8 +350,8 @@ export class MarketOrchestrator extends EventEmitter {
     const btcPriceAtWindowStart =
       windowStartMs <= Date.now()
         ? (this.btcWatcher.getPriceAt(windowStartMs) ??
-           this.btcWatcher.getCurrentPrice()?.price ??
-           null)
+          this.btcWatcher.getCurrentPrice()?.price ??
+          null)
         : null;
 
     const state: ActiveMarketState = {
@@ -790,8 +790,6 @@ export class MarketOrchestrator extends EventEmitter {
     // Cleanup active market
     this.cleanupMarket(marketId);
   }
-
-
 
   /**
    * Force-resolve expired positions after resolution watch period.
