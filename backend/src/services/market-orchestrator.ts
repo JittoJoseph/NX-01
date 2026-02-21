@@ -309,17 +309,7 @@ export class MarketOrchestrator extends EventEmitter {
 
     // Capture current BTC price as the "price to beat" for relative Up/Down markets.
     // For absolute price markets (above/below $X), targetPrice takes precedence.
-    // If the RTDS hasn't received a price yet, fall back to Binance REST immediately.
-    let btcPriceAtWindowStart = this.btcWatcher.getCurrentPrice()?.price ?? null;
-    if (btcPriceAtWindowStart === null) {
-      btcPriceAtWindowStart = await this.btcWatcher.fetchCurrentPriceRest();
-      if (btcPriceAtWindowStart !== null) {
-        logger.info(
-          { btcPriceAtWindowStart, marketId: market.id },
-          "btcPriceAtWindowStart sourced via Binance REST (RTDS not ready yet)",
-        );
-      }
-    }
+    const btcPriceAtWindowStart = this.btcWatcher.getCurrentPrice()?.price ?? null;
 
     const state: ActiveMarketState = {
       marketId: market.id,

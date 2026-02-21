@@ -1,6 +1,5 @@
 import { EventEmitter } from "events";
 import WebSocket from "ws";
-import axios from "axios";
 import { createModuleLogger } from "../utils/logger.js";
 import { POLY_URLS } from "../types/index.js";
 import type { BtcPriceData } from "../interfaces/websocket-types.js";
@@ -9,18 +8,15 @@ const logger = createModuleLogger("btc-price-watcher");
 
 /**
  * Real-time BTC price watcher via Polymarket RTDS WebSocket.
- * Connects to wss://ws-live-data.polymarket.com
+ * Endpoint: wss://ws-live-data.polymarket.com
  *
- * Subscribes to BOTH sources for maximum reliability:
- *   - Binance:   topic="crypto_prices",           symbol="btcusdt"
- *   - Chainlink: topic="crypto_prices_chainlink",  symbol="btc/usd"
+ * Subscribes to both RTDS price sources without server-side filters
+ * (filtering in code is more robust than relying on server-side filter strings):
+ *   - Binance:   topic="crypto_prices",           filters btcusdt in handler
+ *   - Chainlink: topic="crypto_prices_chainlink",  filters btc/usd in handler
  *
- * No server-side filter is applied — all symbols from both sources are
- * received and filtered in code (server-side filters can silently fail).
- *
- * REST FALLBACK: if RTDS hasn't delivered a price within 10 s of connecting,
- * starts polling Binance REST API (api.binance.com/api/v3/ticker/price)
- * every 8 s until RTDS resumes.
+ * Keepalive: sends TEXT "PING" every 5 s per Polymarket RTDS docs.
+ * Reconnects with exponential back-off on any disconnect/error.
  *
  * Emits: "btcPriceUpdate" { price: number, timestamp: number }
  */
@@ -32,15 +28,9 @@ export class BtcPriceWatcher extends EventEmitter {
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
-  private restFallbackTimer: ReturnType<typeof setTimeout> | null = null;
-  private restPollTimer: ReturnType<typeof setInterval> | null = null;
 
   /** Send TEXT "PING" every 5 s to keep RTDS connection alive (per docs). */
-  private static readonly PING_INTERVAL = 5000;
-  /** Start REST fallback if no price after this delay from connect. */
-  private static readonly REST_FALLBACK_DELAY = 10_000;
-  /** Poll Binance REST every N ms when REST fallback is active. */
-  private static readonly REST_POLL_INTERVAL = 8_000;
+  private static readonly PING_INTERVAL = 5_000;
   private static readonly MAX_RECONNECT_DELAY = 30_000;
   private static readonly BASE_RECONNECT_DELAY = 1_000;
 
@@ -53,7 +43,6 @@ export class BtcPriceWatcher extends EventEmitter {
 
   stop(): void {
     this.running = false;
-    this.clearRestTimers();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -81,97 +70,13 @@ export class BtcPriceWatcher extends EventEmitter {
     return this.ws?.readyState === WebSocket.OPEN;
   }
 
-  /**
-   * Fetch BTC/USDT price from Binance REST API.
-   * Used as fallback when RTDS hasn't delivered a price yet, and also
-   * callable directly from the orchestrator when a new market opens and
-   * currentPrice is still null.
-   * Returns null on failure.
-   */
-  async fetchCurrentPriceRest(): Promise<number | null> {
-    try {
-      const resp = await axios.get<{ symbol: string; price: string }>(
-        "https://api.binance.com/api/v3/ticker/price",
-        { params: { symbol: "BTCUSDT" }, timeout: 5000 },
-      );
-      const price = parseFloat(resp.data.price);
-      if (!isNaN(price) && price > 0) {
-        logger.info({ price }, "BTC price fetched via Binance REST");
-        // Update internal state but do NOT stop REST polling — RTDS may be
-        // permanently broken; polling must continue until RTDS resumes.
-        this.currentPrice = price;
-        this.lastTimestamp = Date.now();
-        this.emit("btcPriceUpdate", {
-          price: this.currentPrice,
-          timestamp: this.lastTimestamp,
-        } satisfies BtcPriceData);
-        return price;
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      logger.warn({ err: msg }, "Binance REST price fetch failed");
-    }
-    return null;
-  }
-
-  // -------------------------------------------------------
-  // Private helpers
-  // -------------------------------------------------------
-
-  /**
-   * Update price state and notify listeners.
-   * When called from the RTDS message handler, also cancels any REST fallback
-   * timers since RTDS is working correctly.
-   */
-  private setCurrentPrice(
-    price: number,
-    timestamp: number,
-    source: "rtds" | "rest",
-  ): void {
+  private setPrice(price: number, timestamp: number): void {
     this.currentPrice = price;
     this.lastTimestamp = timestamp;
-    if (source === "rtds") {
-      // RTDS is delivering — cancel REST fallback
-      this.clearRestTimers();
-    }
     this.emit("btcPriceUpdate", {
-      price: this.currentPrice,
-      timestamp: this.lastTimestamp,
+      price,
+      timestamp,
     } satisfies BtcPriceData);
-  }
-
-  private clearRestTimers(): void {
-    if (this.restFallbackTimer) {
-      clearTimeout(this.restFallbackTimer);
-      this.restFallbackTimer = null;
-    }
-    if (this.restPollTimer) {
-      clearInterval(this.restPollTimer);
-      this.restPollTimer = null;
-    }
-  }
-
-  /**
-   * Start a delayed REST fallback.
-   * If no RTDS price arrives within REST_FALLBACK_DELAY ms, begin polling
-   * Binance REST API every REST_POLL_INTERVAL ms.
-   */
-  private startRestFallback(): void {
-    this.clearRestTimers();
-    this.restFallbackTimer = setTimeout(() => {
-      if (!this.running) return;
-      if (this.currentPrice === null) {
-        logger.warn(
-          "RTDS produced no BTC price after 10 s — starting Binance REST fallback poll",
-        );
-        this.fetchCurrentPriceRest();
-        this.restPollTimer = setInterval(async () => {
-          if (this.running && this.currentPrice === null) {
-            await this.fetchCurrentPriceRest();
-          }
-        }, BtcPriceWatcher.REST_POLL_INTERVAL);
-      }
-    }, BtcPriceWatcher.REST_FALLBACK_DELAY);
   }
 
   private connect(): void {
@@ -205,7 +110,7 @@ export class BtcPriceWatcher extends EventEmitter {
         });
         this.ws!.send(subscribeMsg);
         logger.debug(
-          "RTDS subscribed: crypto_prices (all Binance) + crypto_prices_chainlink (all Chainlink)",
+          "RTDS subscribed: crypto_prices (Binance) + crypto_prices_chainlink (Chainlink)",
         );
 
         // Keepalive: send TEXT "PING" every 5 s per Polymarket RTDS docs
@@ -214,9 +119,6 @@ export class BtcPriceWatcher extends EventEmitter {
             this.ws.send("PING");
           }
         }, BtcPriceWatcher.PING_INTERVAL);
-
-        // Start REST fallback in case subscription delivers no data
-        this.startRestFallback();
       });
 
       this.ws.on("message", (rawData: WebSocket.Data) => {
@@ -241,7 +143,7 @@ export class BtcPriceWatcher extends EventEmitter {
                 typeof payload["timestamp"] === "number"
                   ? (payload["timestamp"] as number)
                   : (msg["timestamp"] as number) ?? Date.now();
-              this.setCurrentPrice(payload["value"] as number, ts, "rtds");
+              this.setPrice(payload["value"] as number, ts);
               return;
             }
           }
@@ -258,7 +160,7 @@ export class BtcPriceWatcher extends EventEmitter {
                 typeof payload["timestamp"] === "number"
                   ? (payload["timestamp"] as number)
                   : (msg["timestamp"] as number) ?? Date.now();
-              this.setCurrentPrice(payload["value"] as number, ts, "rtds");
+              this.setPrice(payload["value"] as number, ts);
               return;
             }
           }
@@ -291,7 +193,6 @@ export class BtcPriceWatcher extends EventEmitter {
       clearInterval(this.pingTimer);
       this.pingTimer = null;
     }
-    // Don't clear REST fallback on disconnect — keep polling if active
   }
 
   private scheduleReconnect(): void {
