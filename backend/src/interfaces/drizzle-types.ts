@@ -1,9 +1,5 @@
 import type { InferSelectModel } from "drizzle-orm";
-import type {
-  simulatedTrades,
-  markets,
-  auditLogs,
-} from "../db/schema.js";
+import type { simulatedTrades, markets, auditLogs } from "../db/schema.js";
 
 export type SimulatedTrade = InferSelectModel<typeof simulatedTrades>;
 export type Market = InferSelectModel<typeof markets>;

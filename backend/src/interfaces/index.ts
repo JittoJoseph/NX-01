@@ -1,8 +1,4 @@
-export type {
-  SimulatedTrade,
-  Market,
-  AuditLog,
-} from "./drizzle-types.js";
+export type { SimulatedTrade, Market, AuditLog } from "./drizzle-types.js";
 
 export type {
   ClobWsMessage,

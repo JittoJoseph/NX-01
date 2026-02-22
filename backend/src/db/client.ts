@@ -271,5 +271,3 @@ export async function logAudit(
     logger.error({ error: e }, "Failed to write audit log");
   }
 }
-
-

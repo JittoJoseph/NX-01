@@ -295,7 +295,10 @@ export class MarketOrchestrator extends EventEmitter {
 
         // For relative Up/Down markets (no absolute target price), update the
         // strategy engine so the BTC distance check uses the correct target.
-        if (state.targetPrice === null && state.btcPriceAtWindowStart !== null) {
+        if (
+          state.targetPrice === null &&
+          state.btcPriceAtWindowStart !== null
+        ) {
           this.strategyEngine.updateTargetPrice(
             state.yesTokenId,
             state.btcPriceAtWindowStart,
@@ -511,14 +514,22 @@ export class MarketOrchestrator extends EventEmitter {
       const state = this.activeMarkets.get(row.id);
       if (!state || state.resolved) return;
       state.resolved = true;
-      await this.resolvePositionsForMarket(row.id, winningAssetId, winningOutcome);
+      await this.resolvePositionsForMarket(
+        row.id,
+        winningAssetId,
+        winningOutcome,
+      );
       return;
     }
 
     const state = this.activeMarkets.get(marketId);
     if (!state || state.resolved) return;
     state.resolved = true;
-    await this.resolvePositionsForMarket(marketId, winningAssetId, winningOutcome);
+    await this.resolvePositionsForMarket(
+      marketId,
+      winningAssetId,
+      winningOutcome,
+    );
   }
 
   /**
@@ -681,7 +692,7 @@ export class MarketOrchestrator extends EventEmitter {
   private scheduleResolutionMonitor(marketId: string): void {
     if (this.resolutionTimers.has(marketId)) return;
 
-    const FAST_INTERVAL = 5_000;  // 5s
+    const FAST_INTERVAL = 5_000; // 5s
     const SLOW_INTERVAL = 30_000; // 30s
     const FAST_PHASE_MS = 2 * 60_000; // 2 min of fast polling
     const HARD_TIMEOUT_MS = 30 * 60_000; // 30 min hard cutoff

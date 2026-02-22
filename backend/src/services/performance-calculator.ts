@@ -124,10 +124,7 @@ export async function calculatePortfolioPerformance(
     ? totalPnl.div(totalInvested).mul(100).toFixed(2)
     : "0.00";
   const avgWin = wins > 0 ? winPnlSum.div(wins).toFixed(6) : "0";
-  const avgLoss =
-    losses > 0
-      ? lossPnlSum.div(losses).toFixed(6)
-      : "0";
+  const avgLoss = losses > 0 ? lossPnlSum.div(losses).toFixed(6) : "0";
   const avgBtcDistance =
     btcDistanceCount > 0
       ? btcDistanceSum.div(btcDistanceCount).toFixed(4)
