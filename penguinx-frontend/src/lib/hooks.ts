@@ -7,7 +7,6 @@ import type {
   SystemStats,
   LiveMarketInfo,
   DiscoveredMarket,
-  ExperimentRun,
   PerformanceMetrics,
   AuditLog,
   WsMessage,
@@ -64,16 +63,9 @@ export function useTrades(status?: string, limit?: number) {
       setTrades((prev) => prev.map((t) => (t.id === trade.id ? trade : t)));
     });
 
-    const unsubStopLoss = ws.on("stopLossTriggered", (msg: WsMessage) => {
-      const trade = (msg.data as { trade?: SimulatedTrade })?.trade;
-      if (!trade) return;
-      setTrades((prev) => prev.map((t) => (t.id === trade.id ? trade : t)));
-    });
-
     return () => {
       unsubOpened();
       unsubResolved();
-      unsubStopLoss();
     };
   }, []);
 
@@ -190,35 +182,6 @@ export function useActiveMarkets() {
   }, [fetchMarkets]);
 
   return { markets, loading, error, refetch: fetchMarkets };
-}
-
-/**
- * Hook to fetch experiment runs.
- */
-export function useExperiments() {
-  const [experiments, setExperiments] = useState<ExperimentRun[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-
-  const fetchExperiments = useCallback(async () => {
-    try {
-      setLoading(true);
-      const api = getApiClient();
-      const response = await api.getExperiments();
-      setExperiments(response);
-      setError(null);
-    } catch (err) {
-      setError(err as Error);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchExperiments();
-  }, [fetchExperiments]);
-
-  return { experiments, loading, error, refetch: fetchExperiments };
 }
 
 /**

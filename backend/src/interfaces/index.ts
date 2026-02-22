@@ -2,7 +2,6 @@ export type {
   SimulatedTrade,
   Market,
   AuditLog,
-  ExperimentRun,
 } from "./drizzle-types.js";
 
 export type {

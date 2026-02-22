@@ -3,7 +3,7 @@ import postgres from "postgres";
 import { getConfig } from "../utils/config.js";
 import { createModuleLogger } from "../utils/logger.js";
 import * as schema from "./schema.js";
-import { eq, sql, and, inArray } from "drizzle-orm";
+import { eq, sql, and } from "drizzle-orm";
 
 const logger = createModuleLogger("database");
 
@@ -227,7 +227,7 @@ export async function createSimulatedTrade(data: {
 
 export async function resolveTrade(
   id: string,
-  outcome: "WIN" | "LOSS" | "STOP_LOSS",
+  outcome: "WIN" | "LOSS",
   realizedPnl: string,
   exitPrice?: string,
 ) {
@@ -241,7 +241,7 @@ export async function resolveTrade(
       exitPrice: finalExitPrice,
       exitTs: new Date(),
       realizedPnl,
-      status: "CLOSED",
+      status: "SETTLED",
       updatedAt: new Date(),
     })
     .where(eq(schema.simulatedTrades.id, id))
@@ -272,50 +272,4 @@ export async function logAudit(
   }
 }
 
-// ============================================
-// Experiment runs
-// ============================================
 
-export async function createExperimentRun(data: {
-  id: string;
-  name: string;
-  description?: string | null;
-  strategyVariant?: string | null;
-  parameters?: any;
-  status?: string;
-}): Promise<void> {
-  const database = getDb();
-  await database.insert(schema.experimentRuns).values({
-    id: data.id,
-    name: data.name,
-    description: data.description || null,
-    strategyVariant: data.strategyVariant || null,
-    parameters: data.parameters || null,
-    status: data.status || "RUNNING",
-  });
-}
-
-export async function updateExperimentRun(
-  experimentId: string,
-  updates: {
-    endedAt?: string | Date;
-    status?: string;
-    totalTrades?: string;
-    successfulTrades?: string;
-    avgRealizedPnl?: string;
-    metadata?: any;
-  },
-): Promise<void> {
-  const database = getDb();
-  const dbUpdates: Record<string, unknown> = { ...updates };
-  if (updates.endedAt) {
-    dbUpdates.endedAt =
-      updates.endedAt instanceof Date
-        ? updates.endedAt
-        : new Date(updates.endedAt);
-  }
-  await database
-    .update(schema.experimentRuns)
-    .set(dbUpdates)
-    .where(eq(schema.experimentRuns.id, experimentId));
-}

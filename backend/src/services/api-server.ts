@@ -71,9 +71,6 @@ export class ApiServer {
     orchestrator.on("tradeResolved", (data) =>
       this.broadcast({ type: "tradeResolved", data }),
     );
-    orchestrator.on("stopLossTriggered", (data) =>
-      this.broadcast({ type: "stopLossTriggered", data }),
-    );
 
     // BTC price updates
     const btcWatcher = getBtcPriceWatcher();
@@ -156,7 +153,6 @@ export class ApiServer {
             simulationAmountUsd: config.simulation.amountUsd,
             maxSimultaneousPositions: config.strategy.maxSimultaneousPositions,
             minBtcDistanceUsd: config.strategy.minBtcDistanceUsd,
-            stopLossThreshold: config.stopLoss.threshold,
           },
         });
       } catch (error) {
@@ -224,7 +220,7 @@ export class ApiServer {
         const status = req.query.status as string | undefined;
 
         const conditions = [];
-        if (status === "OPEN" || status === "CLOSED") {
+        if (status === "OPEN" || status === "SETTLED") {
           conditions.push(eq(schema.simulatedTrades.status, status));
         }
 
@@ -264,21 +260,6 @@ export class ApiServer {
       }
     });
 
-    // Experiments
-    this.app.get("/api/experiments", async (_req, res) => {
-      try {
-        const db = getDb();
-        const rows = await db
-          .select()
-          .from(schema.experimentRuns)
-          .orderBy(desc(schema.experimentRuns.startedAt))
-          .limit(20);
-        res.json(rows);
-      } catch (error) {
-        res.status(500).json({ error: "Failed to get experiments" });
-      }
-    });
-
     // Audit log
     this.app.get("/api/audit", async (req: Request, res: Response) => {
       try {
@@ -313,7 +294,6 @@ export class ApiServer {
         await db.delete(schema.simulatedTrades);
         await db.delete(schema.markets);
         await db.delete(schema.auditLogs);
-        await db.delete(schema.experimentRuns);
 
         logger.warn(
           "Database wiped and system paused via admin endpoint — restart required",

@@ -83,7 +83,7 @@ export function TradesTable({
             const fees = parseFloat(trade.entryFees || "0");
             const usdAmount = parseFloat(trade.simulatedUsdAmount || "1");
             const isUp = trade.outcomeLabel === "Up";
-            const isClosed = trade.status === "CLOSED";
+            const isClosed = trade.status === "SETTLED";
             const isOpen = trade.status === "OPEN";
 
             // Exit price for closed trades
@@ -276,12 +276,10 @@ export function TradesTable({
                       className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold ${
                         trade.exitOutcome === "WIN"
                           ? "bg-emerald-500/10 text-emerald-500"
-                          : trade.exitOutcome === "STOP_LOSS"
-                            ? "bg-amber-500/10 text-amber-500"
-                            : "bg-muted/40 text-muted-foreground"
+                          : "bg-muted/40 text-muted-foreground"
                       }`}
                     >
-                      {trade.exitOutcome || "CLOSED"}
+                      {trade.exitOutcome || "SETTLED"}
                     </span>
                   ) : (
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-blue-500/10 text-blue-500">

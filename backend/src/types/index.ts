@@ -99,12 +99,8 @@ export const ConfigSchema = z.object({
     tradeFromWindowSeconds: z.number().min(5).max(600),
     entryPriceThreshold: z.number().min(0.9).max(0.99),
     maxSimultaneousPositions: z.number().min(1).max(100),
-    resolutionWatchMinutes: z.number().min(1).max(30),
     minBtcDistanceUsd: z.number().min(0).max(100000),
     scanIntervalMs: z.number().min(10000),
-  }),
-  stopLoss: z.object({
-    threshold: z.number().min(0.01).max(0.99),
   }),
   wipe: z.object({
     password: z.string().min(1),

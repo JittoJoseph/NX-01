@@ -7,7 +7,6 @@ import type {
   SystemStats,
   LiveMarketInfo,
   DiscoveredMarket,
-  ExperimentRun,
   PerformanceMetrics,
   AuditLog,
   HealthResponse,
@@ -97,10 +96,6 @@ export class ApiClient {
 
     const qs = searchParams.toString();
     return fetchWithRetry(`${this.baseUrl}/api/trades${qs ? `?${qs}` : ""}`);
-  }
-
-  async getExperiments(): Promise<ExperimentRun[]> {
-    return fetchWithRetry(`${this.baseUrl}/api/experiments`);
   }
 
   async getPerformance(

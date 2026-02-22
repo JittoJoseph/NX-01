@@ -1,7 +1,6 @@
 import { EventEmitter } from "events";
 import { createModuleLogger } from "../utils/logger.js";
 import { getConfig } from "../utils/config.js";
-import type { Orderbook } from "../types/index.js";
 import type { BtcPriceData } from "../interfaces/websocket-types.js";
 
 const logger = createModuleLogger("strategy-engine");
@@ -18,7 +17,6 @@ export interface MarketOpportunity {
   btcTargetPrice: number;
   btcDistanceUsd: number;
   secondsToEnd: number;
-  askDepthUsd: number; // liquidity available at/near threshold
   trigger: string;
 }
 
@@ -80,6 +78,19 @@ export class StrategyEngine extends EventEmitter {
   unregisterMarket(tokenId: string): void {
     this.watchedMarkets.delete(tokenId);
     this.priceStates.delete(tokenId);
+    // Clear evaluated flag so future markets with this token can be re-evaluated
+    this.evaluatedTokens.delete(tokenId);
+  }
+
+  /**
+   * Update the target price for a token's market (used when btcPriceAtWindowStart
+   * is set lazily after the window opens for relative Up/Down markets).
+   */
+  updateTargetPrice(tokenId: string, targetPrice: number): void {
+    const market = this.watchedMarkets.get(tokenId);
+    if (market) {
+      market.targetPrice = targetPrice;
+    }
   }
 
   setOpenPositionCount(count: number): void {
@@ -111,7 +122,6 @@ export class StrategyEngine extends EventEmitter {
     bestBid: number,
     bestAsk: number,
     btcPriceData: BtcPriceData | null,
-    orderbook?: Orderbook,
   ): void {
     // Update price state
     const midpoint = (bestBid + bestAsk) / 2;
@@ -154,11 +164,10 @@ export class StrategyEngine extends EventEmitter {
     }
 
     if (market.targetPrice === null) {
-      logger.debug(
-        { tokenId },
-        "No target price parsed for market, skipping distance check",
-      );
-      // Allow trade without distance check if we can't parse target
+      // For relative Up/Down markets, targetPrice will be set lazily when the
+      // window opens (btcPriceAtWindowStart). If it's still null, we don't have
+      // the window start price yet — skip this evaluation entirely.
+      return;
     } else {
       const btcDistanceUsd = this.calculateBtcDistanceUsd(
         btcPriceData.price,
@@ -183,18 +192,6 @@ export class StrategyEngine extends EventEmitter {
       return;
     }
 
-    // Calculate ask-side depth (liquidity available)
-    let askDepthUsd = 0;
-    if (orderbook) {
-      for (const level of orderbook.asks) {
-        const price = parseFloat(level.price);
-        const size = parseFloat(level.size);
-        if (price <= bestAsk + 0.03) {
-          askDepthUsd += price * size;
-        }
-      }
-    }
-
     const btcDistanceUsd = market.targetPrice
       ? this.calculateBtcDistanceUsd(btcPriceData.price, market.targetPrice)
       : 0;
@@ -210,7 +207,6 @@ export class StrategyEngine extends EventEmitter {
       btcTargetPrice: market.targetPrice ?? 0,
       btcDistanceUsd,
       secondsToEnd,
-      askDepthUsd,
       trigger: "end_of_window_micro_profit",
     };
 

@@ -277,10 +277,6 @@ export function DashboardPage() {
                     label="BTC Min Dist"
                     value={`$${stats.config.minBtcDistanceUsd}`}
                   />
-                  <StatRow
-                    label="Stop Loss"
-                    value={`${(stats.config.stopLossThreshold * 100).toFixed(0)}¢`}
-                  />
                 </div>
               ) : (
                 <div className="text-xs text-muted-foreground font-mono py-4 text-center">
@@ -381,9 +377,7 @@ function TopDashboardSection({
   const realizedPnl = netPnl - unrealizedPnl;
   const wins = performance?.wins || 0;
   const losses = performance?.losses || 0;
-  const stopLosses = performance?.stopLosses || 0;
-  const totalLosses = losses + stopLosses;
-  const closedPositions = wins + totalLosses;
+  const closedPositions = wins + losses;
   const openPositions = performance?.openPositions || 0;
   const bestTrade = parseFloat(performance?.largestWin || "0");
   const worstTrade = parseFloat(performance?.largestLoss || "0");
@@ -761,7 +755,7 @@ function TopDashboardSection({
                   />
                 </div>
                 <div className="flex justify-between text-[10px] font-mono">
-                  <span className="text-red-500/70">{totalLosses} losses</span>
+                  <span className="text-red-500/70">{losses} losses</span>
                   <span className="text-emerald-500/70">{wins} wins</span>
                 </div>
               </div>
@@ -769,7 +763,7 @@ function TopDashboardSection({
               <div className="grid grid-cols-3 gap-3 pt-1">
                 {[
                   ["OPEN", openPositions],
-                  ["CLOSED", closedPositions],
+                  ["SETTLED", closedPositions],
                   ["TOTAL", openPositions + closedPositions],
                 ].map(([label, val]) => (
                   <div key={label as string}>
@@ -857,14 +851,6 @@ function TopDashboardSection({
                 </div>
                 <div className="text-sm font-bold font-mono tabular-nums text-foreground">
                   {activeMarketsCount}
-                </div>
-              </div>
-              <div>
-                <div className="text-[10px] font-mono text-muted-foreground mb-0.5">
-                  STOP LOSSES
-                </div>
-                <div className="text-sm font-bold font-mono tabular-nums text-amber-500">
-                  {stopLosses}
                 </div>
               </div>
               <div>

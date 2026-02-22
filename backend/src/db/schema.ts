@@ -81,7 +81,7 @@ export const simulatedTrades = pgTable(
     // Exit / resolution
     exitPrice: decimal("exit_price", { precision: 18, scale: 8 }),
     exitTs: timestamp("exit_ts"),
-    exitOutcome: text("exit_outcome"), // WIN | LOSS | STOP_LOSS
+    exitOutcome: text("exit_outcome"), // WIN | LOSS
     realizedPnl: decimal("realized_pnl", { precision: 18, scale: 8 }),
     // Status
     status: text("status").default("OPEN").notNull(),
@@ -100,35 +100,6 @@ export const simulatedTrades = pgTable(
     uqOpenTradePerToken: uniqueIndex("uq_open_trade_per_market_token")
       .on(table.marketId, table.tokenId)
       .where(sql`status = 'OPEN'`),
-  }),
-);
-
-/** Experiment runs — one per server start */
-export const experimentRuns = pgTable(
-  "experiment_runs",
-  {
-    id: text("id").primaryKey().notNull(),
-    name: text("name").notNull(),
-    description: text("description"),
-    strategyVariant: text("strategy_variant"),
-    parameters: jsonb("parameters"),
-    startedAt: timestamp("started_at").defaultNow().notNull(),
-    endedAt: timestamp("ended_at"),
-    status: text("status").default("RUNNING").notNull(),
-    totalTrades: decimal("total_trades", { precision: 18, scale: 0 }).default(
-      "0",
-    ),
-    successfulTrades: decimal("successful_trades", {
-      precision: 18,
-      scale: 0,
-    }).default("0"),
-    avgRealizedPnl: decimal("avg_realized_pnl", { precision: 18, scale: 8 }),
-    metadata: jsonb("metadata"),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
-  },
-  (table) => ({
-    statusIdx: index("er_status_idx").on(table.status),
-    startedAtIdx: index("er_started_at_idx").on(table.startedAt),
   }),
 );
 

@@ -16,7 +16,6 @@ export interface PerformanceMetrics {
   totalTrades: number;
   wins: number;
   losses: number;
-  stopLosses: number;
   winRate: string;
   avgWin: string;
   avgLoss: string;
@@ -69,7 +68,6 @@ export async function calculatePortfolioPerformance(
   let totalFees = new Decimal(0);
   let wins = 0;
   let losses = 0;
-  let stopLosses = 0;
   let winPnlSum = new Decimal(0);
   let lossPnlSum = new Decimal(0);
   let largestWin = new Decimal(0);
@@ -84,7 +82,7 @@ export async function calculatePortfolioPerformance(
     totalInvested = totalInvested.plus(invested);
     totalFees = totalFees.plus(new Decimal(trade.entryFees ?? "0"));
 
-    if (trade.status === "CLOSED" && trade.realizedPnl !== null) {
+    if (trade.status === "SETTLED" && trade.realizedPnl !== null) {
       const pnl = new Decimal(trade.realizedPnl);
       totalPnl = totalPnl.plus(pnl);
 
@@ -92,10 +90,6 @@ export async function calculatePortfolioPerformance(
         wins++;
         winPnlSum = winPnlSum.plus(pnl);
         if (pnl.gt(largestWin)) largestWin = pnl;
-      } else if (trade.exitOutcome === "STOP_LOSS") {
-        stopLosses++;
-        lossPnlSum = lossPnlSum.plus(pnl);
-        if (pnl.lt(largestLoss)) largestLoss = pnl;
       } else {
         losses++;
         lossPnlSum = lossPnlSum.plus(pnl);
@@ -122,7 +116,7 @@ export async function calculatePortfolioPerformance(
     }
   }
 
-  const closedTrades = wins + losses + stopLosses;
+  const closedTrades = wins + losses;
   const totalTrades = trades.length;
   const winRate =
     closedTrades > 0 ? ((wins / closedTrades) * 100).toFixed(2) : "0.00";
@@ -131,8 +125,8 @@ export async function calculatePortfolioPerformance(
     : "0.00";
   const avgWin = wins > 0 ? winPnlSum.div(wins).toFixed(6) : "0";
   const avgLoss =
-    losses + stopLosses > 0
-      ? lossPnlSum.div(losses + stopLosses).toFixed(6)
+    losses > 0
+      ? lossPnlSum.div(losses).toFixed(6)
       : "0";
   const avgBtcDistance =
     btcDistanceCount > 0
@@ -147,7 +141,6 @@ export async function calculatePortfolioPerformance(
     totalTrades,
     wins,
     losses,
-    stopLosses,
     winRate,
     avgWin,
     avgLoss,

@@ -90,6 +90,8 @@ export class MarketOrchestrator extends EventEmitter {
   private client: PolymarketClient;
 
   private activeMarkets: Map<string, ActiveMarketState> = new Map();
+  /** conditionId → marketId for O(1) lookup on WS market_resolved events */
+  private conditionIdMap: Map<string, string> = new Map();
   private openPositions: Map<string, OpenPosition> = new Map();
   private resolutionTimers: Map<string, ReturnType<typeof setInterval>> =
     new Map();
@@ -153,7 +155,7 @@ export class MarketOrchestrator extends EventEmitter {
     }
 
     for (const [marketId, timer] of this.resolutionTimers) {
-      clearInterval(timer);
+      clearTimeout(timer);
     }
     this.resolutionTimers.clear();
 
@@ -269,6 +271,8 @@ export class MarketOrchestrator extends EventEmitter {
     //              not yet opened when they were first discovered, and for any
     //              cold-start race. Only fire once the BTC tick timestamp is at or
     //              after the window-open second so we match Polymarket's oracle.
+    //              Also update the strategy engine's target price so distance
+    //              checks work correctly for relative Up/Down markets.
     this.btcWatcher.on("btcPriceUpdate", (data: BtcPriceData) => {
       const windowDurationMs =
         WINDOW_CONFIGS[getConfig().strategy.marketWindow]?.durationMs ??
@@ -288,6 +292,19 @@ export class MarketOrchestrator extends EventEmitter {
           },
           "btcPriceAtWindowStart set lazily",
         );
+
+        // For relative Up/Down markets (no absolute target price), update the
+        // strategy engine so the BTC distance check uses the correct target.
+        if (state.targetPrice === null && state.btcPriceAtWindowStart !== null) {
+          this.strategyEngine.updateTargetPrice(
+            state.yesTokenId,
+            state.btcPriceAtWindowStart,
+          );
+          this.strategyEngine.updateTargetPrice(
+            state.noTokenId,
+            state.btcPriceAtWindowStart,
+          );
+        }
       }
     });
 
@@ -370,6 +387,11 @@ export class MarketOrchestrator extends EventEmitter {
     };
 
     this.activeMarkets.set(market.id, state);
+
+    // Build conditionId → marketId map for fast WS resolution matching
+    if (market.conditionId) {
+      this.conditionIdMap.set(market.conditionId, market.id);
+    }
 
     // Register both outcome tokens with the strategy engine.
     // For relative Up/Down markets (targetPrice=null), use btcPriceAtWindowStart
@@ -464,6 +486,7 @@ export class MarketOrchestrator extends EventEmitter {
 
   /**
    * Handle WebSocket market resolution event.
+   * Uses in-memory conditionId → marketId map for O(1) lookup.
    */
   private async onMarketResolved(ev: MarketResolvedEvent): Promise<void> {
     const { conditionId, winningAssetId, winningOutcome } = ev;
@@ -473,29 +496,29 @@ export class MarketOrchestrator extends EventEmitter {
       "Market resolved via WebSocket",
     );
 
-    // Find active market by condition ID
-    for (const [marketId, state] of this.activeMarkets) {
-      if (state.resolved) continue;
-
-      // Need to match by looking up condition ID from DB
+    // O(1) lookup via in-memory map
+    const marketId = this.conditionIdMap.get(conditionId);
+    if (!marketId) {
+      // Fallback: DB lookup in case map missed it
       const db = getDb();
       const [row] = await db
         .select()
         .from(schema.markets)
         .where(eq(schema.markets.conditionId, conditionId))
         .limit(1);
+      if (!row) return;
 
-      if (!row) continue;
-
+      const state = this.activeMarkets.get(row.id);
+      if (!state || state.resolved) return;
       state.resolved = true;
-
-      // Resolve all open positions for this market
-      await this.resolvePositionsForMarket(
-        row.id,
-        winningAssetId,
-        winningOutcome,
-      );
+      await this.resolvePositionsForMarket(row.id, winningAssetId, winningOutcome);
+      return;
     }
+
+    const state = this.activeMarkets.get(marketId);
+    if (!state || state.resolved) return;
+    state.resolved = true;
+    await this.resolvePositionsForMarket(marketId, winningAssetId, winningOutcome);
   }
 
   /**
@@ -649,31 +672,60 @@ export class MarketOrchestrator extends EventEmitter {
   }
 
   /**
-   * Schedule periodic resolution polls for a market.
+   * Schedule persistent resolution polling for a market.
+   *
+   * Polls every 5s for the first 2 minutes (when auto-resolution typically fires),
+   * then backs off to every 30s. After 30 minutes hard-timeout: force-resolve as
+   * LOSS so positions never stay open indefinitely.
    */
   private scheduleResolutionMonitor(marketId: string): void {
     if (this.resolutionTimers.has(marketId)) return;
 
-    const config = getConfig();
-    const checkInterval = 5000; // 5s
-    const maxChecks =
-      (config.strategy.resolutionWatchMinutes * 60 * 1000) / checkInterval;
-    let checkCount = 0;
+    const FAST_INTERVAL = 5_000;  // 5s
+    const SLOW_INTERVAL = 30_000; // 30s
+    const FAST_PHASE_MS = 2 * 60_000; // 2 min of fast polling
+    const HARD_TIMEOUT_MS = 30 * 60_000; // 30 min hard cutoff
+    const startTime = Date.now();
 
-    const timer = setInterval(async () => {
-      checkCount++;
-      if (checkCount > maxChecks || !this.running) {
-        clearInterval(timer);
+    const poll = async () => {
+      if (!this.running) {
+        clearTimeout(timerId);
         this.resolutionTimers.delete(marketId);
-        // Force resolve any remaining positions as expired
+        return;
+      }
+
+      // Check if any positions still exist for this market
+      const hasPositions = Array.from(this.openPositions.values()).some(
+        (p) => p.marketId === marketId,
+      );
+      if (!hasPositions) {
+        clearTimeout(timerId);
+        this.resolutionTimers.delete(marketId);
+        return;
+      }
+
+      const elapsed = Date.now() - startTime;
+
+      // Hard timeout: force close remaining positions
+      if (elapsed > HARD_TIMEOUT_MS) {
+        clearTimeout(timerId);
+        this.resolutionTimers.delete(marketId);
         await this.forceResolveExpired(marketId);
         return;
       }
 
+      // Try to poll for resolution
       await this.pollResolution(marketId);
-    }, checkInterval);
 
-    this.resolutionTimers.set(marketId, timer);
+      // Schedule next poll (fast for first 2 min, slow after)
+      const interval = elapsed < FAST_PHASE_MS ? FAST_INTERVAL : SLOW_INTERVAL;
+      timerId = setTimeout(poll, interval);
+      this.resolutionTimers.set(marketId, timerId);
+    };
+
+    // Start first poll after a short delay (market just ended)
+    let timerId = setTimeout(poll, FAST_INTERVAL);
+    this.resolutionTimers.set(marketId, timerId);
   }
 
   /**
@@ -787,41 +839,63 @@ export class MarketOrchestrator extends EventEmitter {
     // Update strategy engine position count
     this.strategyEngine.setOpenPositionCount(this.openPositions.size);
 
-    // Cleanup active market
-    this.cleanupMarket(marketId);
+    // Only clean up if no more open positions reference this market
+    const hasRemainingPositions = Array.from(this.openPositions.values()).some(
+      (p) => p.marketId === marketId,
+    );
+    if (!hasRemainingPositions) {
+      this.cleanupMarket(marketId);
+    }
   }
 
   /**
-   * Force-resolve expired positions after resolution watch period.
+   * Force-resolve expired positions after resolution watch hard timeout.
+   *
+   * First attempts one final API poll. If positions remain unresolved after
+   * that, they are force-closed as LOSS (conservative).
    */
   private async forceResolveExpired(marketId: string): Promise<void> {
+    // One last attempt via API
+    await this.pollResolution(marketId);
+
+    // Collect any positions that are STILL open for this market
+    const remaining: [string, OpenPosition][] = [];
     for (const [tradeId, pos] of this.openPositions) {
-      if (pos.marketId !== marketId) continue;
+      if (pos.marketId === marketId) remaining.push([tradeId, pos]);
+    }
 
-      // Try one last resolve via API
-      try {
-        await this.pollResolution(marketId);
-      } catch {
-        // If still unresolved, mark as loss (conservative)
-        const pnl = calculateLossAmount(
-          pos.entryPrice,
-          pos.entryShares,
-          pos.fees,
-        );
+    for (const [tradeId, pos] of remaining) {
+      const pnl = calculateLossAmount(
+        pos.entryPrice,
+        pos.entryShares,
+        pos.fees,
+      );
 
-        await resolveTrade(tradeId, "LOSS", pnl.toFixed(6), "0");
+      await resolveTrade(tradeId, "LOSS", pnl.toFixed(6), "0");
+      this.openPositions.delete(tradeId);
 
-        this.openPositions.delete(tradeId);
+      await logAudit(
+        "warn",
+        "TRADE_FORCE_RESOLVED",
+        `Trade ${tradeId} force-resolved as LOSS after timeout`,
+        { tradeId, marketId, pnl },
+      );
 
-        logger.warn(
-          { tradeId, marketId },
-          "Position expired without resolution — marked as loss",
-        );
-      }
+      logger.warn(
+        { tradeId, marketId, pnl: pnl.toFixed(4) },
+        "Position force-resolved as LOSS after timeout",
+      );
+
+      this.emit("tradeResolved", {
+        tradeId,
+        isWin: false,
+        pnl,
+        exitPrice: 0,
+        trade: null,
+      });
     }
 
     this.strategyEngine.setOpenPositionCount(this.openPositions.size);
-    this.cleanupMarket(marketId);
   }
 
   /**
@@ -899,14 +973,28 @@ export class MarketOrchestrator extends EventEmitter {
     const state = this.activeMarkets.get(marketId);
     if (!state) return;
 
+    // Safety: never clean up a market that still has open positions
+    const hasPositions = Array.from(this.openPositions.values()).some(
+      (p) => p.marketId === marketId,
+    );
+    if (hasPositions) return;
+
     // Unsubscribe from WS
     if (state.subscribedWs) {
       this.wsWatcher.unsubscribe([state.yesTokenId, state.noTokenId]);
     }
 
-    // Unregister from strategy engine
+    // Unregister from strategy engine (also clears evaluatedTokens)
     this.strategyEngine.unregisterMarket(state.yesTokenId);
     this.strategyEngine.unregisterMarket(state.noTokenId);
+
+    // Remove from conditionId map
+    for (const [cid, mid] of this.conditionIdMap) {
+      if (mid === marketId) {
+        this.conditionIdMap.delete(cid);
+        break;
+      }
+    }
 
     this.activeMarkets.delete(marketId);
   }

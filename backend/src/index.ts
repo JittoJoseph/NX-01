@@ -1,5 +1,5 @@
 import { createModuleLogger } from "./utils/logger.js";
-import { loadConfig, getConfig } from "./utils/config.js";
+import { getConfig } from "./utils/config.js";
 import { connectDatabase } from "./db/client.js";
 import { getBtcPriceWatcher } from "./services/btc-price-watcher.js";
 import { getMarketOrchestrator } from "./services/market-orchestrator.js";
@@ -14,7 +14,7 @@ async function main(): Promise<void> {
   logger.info("═══════════════════════════════════════════");
 
   // 1. Load and validate configuration
-  const config = loadConfig();
+  const config = getConfig();
   logger.info(
     {
       window: config.strategy.marketWindow,
@@ -23,7 +23,6 @@ async function main(): Promise<void> {
       simAmount: config.simulation.amountUsd,
       maxPositions: config.strategy.maxSimultaneousPositions,
       minBtcDistance: config.strategy.minBtcDistanceUsd,
-      stopLoss: config.stopLoss.threshold,
     },
     "Configuration loaded",
   );

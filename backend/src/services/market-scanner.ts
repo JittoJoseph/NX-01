@@ -130,8 +130,10 @@ export class MarketScanner extends EventEmitter {
           newMarketsFound++;
         }
 
-        // Always emit — orchestrator deduplicates via activeMarkets.has()
-        this.emit("newMarket", { market });
+        // Only emit for truly new markets — orchestrator still deduplicates
+        if (wasNew) {
+          this.emit("newMarket", { market });
+        }
       }
 
       if (newMarketsFound > 0) {

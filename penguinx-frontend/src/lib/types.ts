@@ -100,7 +100,6 @@ export interface SystemStats {
     simulationAmountUsd: number;
     maxSimultaneousPositions: number;
     minBtcDistanceUsd: number;
-    stopLossThreshold: number;
   };
 }
 
@@ -128,26 +127,6 @@ export interface DiscoveredMarket {
 }
 
 // ============================================
-// Experiment types
-// ============================================
-
-export interface ExperimentRun {
-  id: string;
-  name: string;
-  description: string | null;
-  strategyVariant: string | null;
-  parameters: Record<string, unknown> | null;
-  startedAt: string;
-  endedAt: string | null;
-  status: string;
-  totalTrades: string;
-  successfulTrades: string;
-  avgRealizedPnl: string | null;
-  metadata: Record<string, unknown> | null;
-  createdAt: string;
-}
-
-// ============================================
 // Performance types
 // ============================================
 
@@ -159,7 +138,6 @@ export interface PerformanceMetrics {
   totalTrades: number;
   wins: number;
   losses: number;
-  stopLosses: number;
   winRate: string;
   avgWin: string;
   avgLoss: string;
@@ -203,7 +181,6 @@ export interface WsMessage {
     | "systemState"
     | "tradeOpened"
     | "tradeResolved"
-    | "stopLossTriggered"
     | "btcPriceUpdate"
     | "pong";
   data?: unknown;
