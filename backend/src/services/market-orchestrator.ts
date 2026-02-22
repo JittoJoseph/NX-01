@@ -24,8 +24,10 @@ import {
 } from "./strategy-engine.js";
 import {
   simulateLimitBuy,
+  simulateLimitSell,
   calculateWinProfit,
   calculateLossAmount,
+  calculateEarlyExitPnl,
 } from "./execution-simulator.js";
 import { getBtcPriceWatcher, BtcPriceWatcher } from "./btc-price-watcher.js";
 import { getPolymarketClient, PolymarketClient } from "./polymarket-client.js";
@@ -69,6 +71,8 @@ interface OpenPosition {
   entryShares: number;
   fees: number;
   marketEndDate: Date;
+  /** Prevents concurrent stop-loss execution for the same position */
+  stopLossTriggered?: boolean;
 }
 
 /**
@@ -453,6 +457,9 @@ export class MarketOrchestrator extends EventEmitter {
       bestAsk,
       this.btcWatcher.getCurrentPrice(),
     );
+
+    // Check stop-loss for any open positions holding this token
+    this.checkStopLoss(tokenId, bestBid);
   }
 
   /**
@@ -478,6 +485,9 @@ export class MarketOrchestrator extends EventEmitter {
       bestAsk,
       this.btcWatcher.getCurrentPrice(),
     );
+
+    // Check stop-loss for any open positions holding this token
+    this.checkStopLoss(ev.tokenId, bestBid);
   }
 
   /**
@@ -561,11 +571,16 @@ export class MarketOrchestrator extends EventEmitter {
         feeRateBps = 25; // 0.25 * 100
       }
 
-      // Simulate the limit buy
+      // Simulate the limit buy using maxEntryPrice as the GTC limit.
+      // This models placing a resting GTC limit order at our maximum
+      // acceptable price. The simulation fills against all asks at or
+      // below this price (price improvement), which is exactly how
+      // Polymarket limit orders work — you get filled at the best
+      // available price up to your limit.
       const execution = simulateLimitBuy(
         orderbook,
         config.simulation.amountUsd,
-        opp.bestAsk, // Place limit at best ask - taker fill
+        config.strategy.maxEntryPrice,
         feeRateBps,
       );
 
@@ -679,6 +694,158 @@ export class MarketOrchestrator extends EventEmitter {
         { error, marketId: opp.marketId, tokenId: opp.tokenId },
         "Failed to execute simulated trade",
       );
+    }
+  }
+
+  // ============================================
+  // Stop-Loss Monitoring
+  // ============================================
+
+  /**
+   * Check if any open position holding `tokenId` should trigger stop-loss.
+   *
+   * Called on every price update. When the best bid drops below the
+   * configured stop-loss threshold, we simulate selling immediately
+   * to limit downside. This replaces waiting for full settlement at $0.
+   *
+   * Stop-loss is only active while the market is still tradable (before
+   * endDate). After endDate, the normal resolution flow handles the exit.
+   */
+  private checkStopLoss(tokenId: string, bestBid: number): void {
+    const config = getConfig();
+    if (!config.strategy.stopLossEnabled) return;
+
+    for (const [tradeId, pos] of this.openPositions) {
+      if (pos.tokenId !== tokenId) continue;
+      if (pos.stopLossTriggered) continue;
+
+      // Only stop-loss while the market is still open for trading
+      if (pos.marketEndDate.getTime() < Date.now()) continue;
+
+      if (bestBid < config.strategy.stopLossThreshold) {
+        pos.stopLossTriggered = true;
+        logger.warn(
+          {
+            tradeId,
+            tokenId,
+            bestBid: bestBid.toFixed(4),
+            threshold: config.strategy.stopLossThreshold,
+            entryPrice: pos.entryPrice.toFixed(4),
+          },
+          "🛑 Stop-loss triggered",
+        );
+
+        this.executeStopLoss(tradeId, pos, bestBid).catch((err) => {
+          logger.error({ err, tradeId }, "Stop-loss execution failed");
+          // Reset flag to allow retry on next price update
+          const position = this.openPositions.get(tradeId);
+          if (position) position.stopLossTriggered = false;
+        });
+      }
+    }
+  }
+
+  /**
+   * Execute a stop-loss sell for an open position.
+   *
+   * 1. Fetches a fresh orderbook for the token
+   * 2. Simulates a limit sell (at any price — panic sell)
+   * 3. Calculates the realized PnL (partial loss instead of full loss)
+   * 4. Closes the position in the DB
+   */
+  private async executeStopLoss(
+    tradeId: string,
+    pos: OpenPosition,
+    triggerBid: number,
+  ): Promise<void> {
+    try {
+      // Fetch a fresh orderbook for accurate sell simulation
+      const orderbookResult = await this.client.getOrderbook(pos.tokenId);
+
+      let exitPrice: number;
+      let exitFees = 0;
+
+      if (orderbookResult?.data && orderbookResult.data.bids?.length > 0) {
+        let feeRateBps: number;
+        try {
+          feeRateBps = await this.client.getFeeRate(pos.tokenId);
+        } catch {
+          feeRateBps = 25;
+        }
+
+        // Simulate selling all shares at any available price (limitPrice=0)
+        const sellResult = simulateLimitSell(
+          orderbookResult.data,
+          pos.entryShares,
+          0, // No minimum — sell at whatever bids exist
+          feeRateBps,
+        );
+
+        exitPrice = sellResult.averagePrice;
+        exitFees = sellResult.fees;
+
+        if (sellResult.totalSharesSold <= 0) {
+          // No bids available — fall back to using triggerBid as estimate
+          exitPrice = triggerBid;
+          exitFees = 0;
+        }
+      } else {
+        // No orderbook available — use the trigger bid as estimated exit
+        exitPrice = triggerBid;
+      }
+
+      const pnl = calculateEarlyExitPnl(
+        pos.entryPrice,
+        exitPrice,
+        pos.entryShares,
+        pos.fees,
+        exitFees,
+      );
+
+      await resolveTrade(tradeId, "LOSS", pnl.toFixed(6), exitPrice.toFixed(6));
+      this.openPositions.delete(tradeId);
+      this.strategyEngine.setOpenPositionCount(this.openPositions.size);
+
+      await logAudit(
+        "warn",
+        "STOP_LOSS",
+        `Trade ${tradeId} stop-loss executed`,
+        {
+          tradeId,
+          tokenId: pos.tokenId,
+          entryPrice: pos.entryPrice,
+          exitPrice,
+          exitFees,
+          triggerBid,
+          pnl,
+        },
+      );
+
+      logger.info(
+        {
+          tradeId,
+          marketId: pos.marketId,
+          outcome: pos.outcomeLabel,
+          entryPrice: pos.entryPrice.toFixed(4),
+          exitPrice: exitPrice.toFixed(4),
+          pnl: pnl.toFixed(4),
+          triggerBid: triggerBid.toFixed(4),
+        },
+        "🛑 Stop-loss sell executed — partial loss realized",
+      );
+
+      this.emit("tradeResolved", {
+        tradeId,
+        isWin: false,
+        pnl,
+        exitPrice,
+        trade: null,
+      });
+    } catch (error) {
+      logger.error({ error, tradeId }, "Stop-loss execution error");
+      // Reset flag to allow retry
+      const position = this.openPositions.get(tradeId);
+      if (position) position.stopLossTriggered = false;
     }
   }
 

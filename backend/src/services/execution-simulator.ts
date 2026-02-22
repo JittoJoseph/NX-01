@@ -183,6 +183,135 @@ function calculateFeePerShare(price: number, feeRateBps: number): number {
   return Math.round(fee * 10000) / 10000;
 }
 
+// ============================================
+// Sell simulation (for stop-loss / early exit)
+// ============================================
+
+/** Result of a simulated limit SELL */
+export interface SellExecutionResult {
+  averagePrice: number;
+  totalSharesSold: number;
+  totalRevenue: number; // USD received (before fees)
+  fees: number; // Taker fee in USD
+  netRevenue: number; // totalRevenue - fees
+  isPartialFill: boolean;
+  fillDetails: SellFillDetail[];
+  orderbookSnapshot: unknown;
+  feeRateBps: number;
+}
+
+interface SellFillDetail {
+  price: number;
+  shares: number;
+  revenue: number;
+  feeForLevel: number;
+}
+
+/**
+ * Simulates a limit SELL order execution for stop-loss / early exit.
+ *
+ * Walks the BID side of the orderbook (selling to resting buyers) from
+ * highest bid downward. Only fills at bid prices **at or above** `limitPrice`.
+ *
+ * For a "panic sell" stop-loss, set limitPrice to 0 to accept any price.
+ *
+ * Fee formula is the same as for buys — taker fees (conservative).
+ *
+ * @param orderbook    Live CLOB orderbook snapshot
+ * @param sharesToSell Number of shares to sell
+ * @param limitPrice   Minimum price we are willing to accept per share (floor)
+ * @param feeRateBps   Fee rate in basis points from CLOB API
+ */
+export function simulateLimitSell(
+  orderbook: Orderbook,
+  sharesToSell: number,
+  limitPrice: number,
+  feeRateBps: number,
+): SellExecutionResult {
+  // Sort bids by price descending (best first)
+  const bids = [...orderbook.bids].sort(
+    (a, b) => parseFloat(b.price) - parseFloat(a.price),
+  );
+
+  const fillDetails: SellFillDetail[] = [];
+  let remainingShares = new Decimal(sharesToSell);
+  let totalSharesSold = new Decimal(0);
+  let totalRevenue = new Decimal(0);
+  let totalFees = new Decimal(0);
+
+  for (const level of bids) {
+    if (remainingShares.lte(0)) break;
+
+    const bidPrice = parseFloat(level.price);
+    const bidSize = parseFloat(level.size);
+
+    // Only sell at prices at or above our limit
+    if (bidPrice < limitPrice) break;
+
+    const feePerShare = calculateFeePerShare(bidPrice, feeRateBps);
+    const sharesToFillAtLevel = Math.min(remainingShares.toNumber(), bidSize);
+
+    if (sharesToFillAtLevel <= 0) continue;
+
+    const shares = new Decimal(sharesToFillAtLevel);
+    const revenue = shares.mul(bidPrice);
+    const fee = shares.mul(feePerShare);
+
+    totalSharesSold = totalSharesSold.plus(shares);
+    totalRevenue = totalRevenue.plus(revenue);
+    totalFees = totalFees.plus(fee);
+    remainingShares = remainingShares.minus(shares);
+
+    fillDetails.push({
+      price: bidPrice,
+      shares: sharesToFillAtLevel,
+      revenue: revenue.toNumber(),
+      feeForLevel: fee.toNumber(),
+    });
+  }
+
+  const isPartialFill = remainingShares.gt(new Decimal(sharesToSell).mul(0.1)); // >10% unsold
+  const avgPrice = totalSharesSold.gt(0)
+    ? totalRevenue.div(totalSharesSold).toNumber()
+    : 0;
+  const roundedFees = Math.round(totalFees.toNumber() * 10000) / 10000;
+
+  if (totalSharesSold.gt(0)) {
+    logger.debug(
+      {
+        avgPrice: avgPrice.toFixed(6),
+        shares: totalSharesSold.toNumber().toFixed(4),
+        revenue: totalRevenue.toNumber().toFixed(4),
+        fees: roundedFees.toFixed(4),
+        levels: fillDetails.length,
+        partial: isPartialFill,
+      },
+      "Limit sell simulated",
+    );
+  }
+
+  return {
+    averagePrice: avgPrice,
+    totalSharesSold: totalSharesSold.toNumber(),
+    totalRevenue: totalRevenue.toNumber(),
+    fees: roundedFees,
+    netRevenue: totalRevenue.toNumber() - roundedFees,
+    isPartialFill,
+    fillDetails,
+    orderbookSnapshot: {
+      bids: orderbook.bids.slice(0, 5),
+      asks: orderbook.asks.slice(0, 5),
+      tick_size: orderbook.tick_size,
+      timestamp: orderbook.timestamp,
+    },
+    feeRateBps,
+  };
+}
+
+// ============================================
+// PnL calculation helpers
+// ============================================
+
 /**
  * Calculate expected profit for a winning trade at a given entry price.
  * profit = (1.00 - entryPrice) × shares - fees
@@ -205,4 +334,18 @@ export function calculateLossAmount(
   fees: number,
 ): number {
   return -(entryPrice * shares + fees);
+}
+
+/**
+ * Calculate PnL for an early exit (stop-loss / take-profit).
+ * pnl = (exitPrice - entryPrice) × shares - entryFees - exitFees
+ */
+export function calculateEarlyExitPnl(
+  entryPrice: number,
+  exitPrice: number,
+  shares: number,
+  entryFees: number,
+  exitFees: number,
+): number {
+  return (exitPrice - entryPrice) * shares - entryFees - exitFees;
 }

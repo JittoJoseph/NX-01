@@ -21,6 +21,12 @@ function envNum(key: string, defaultValue: number): number {
   return parsed;
 }
 
+function envBool(key: string, defaultValue: boolean): boolean {
+  const value = process.env[key];
+  if (value === undefined) return defaultValue;
+  return value === "true";
+}
+
 export function loadConfig(): Config {
   const rawConfig = {
     db: {
@@ -32,10 +38,16 @@ export function loadConfig(): Config {
     strategy: {
       marketWindow: env("MARKET_WINDOW", "5M"),
       tradeFromWindowSeconds: envNum("TRADE_FROM_WINDOW_SECONDS", 30),
-      entryPriceThreshold: envNum("ENTRY_PRICE_THRESHOLD", 0.97),
+      entryPriceThreshold: envNum("ENTRY_PRICE_THRESHOLD", 0.95),
+      maxEntryPrice: envNum(
+        "MAX_ENTRY_PRICE",
+        envNum("ENTRY_PRICE_THRESHOLD", 0.95),
+      ),
       maxSimultaneousPositions: envNum("MAX_SIMULTANEOUS_POSITIONS", 5),
       minBtcDistanceUsd: envNum("MIN_BTC_DISTANCE_USD", 50),
       scanIntervalMs: envNum("SCAN_INTERVAL_MS", 30000),
+      stopLossEnabled: envBool("STOP_LOSS_ENABLED", true),
+      stopLossThreshold: envNum("STOP_LOSS_THRESHOLD", 0.85),
     },
     wipe: {
       password: env("WIPE_PASSWORD"),

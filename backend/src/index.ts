@@ -19,10 +19,14 @@ async function main(): Promise<void> {
     {
       window: config.strategy.marketWindow,
       threshold: config.strategy.entryPriceThreshold,
+      maxEntryPrice: config.strategy.maxEntryPrice,
       tradeWindowSec: config.strategy.tradeFromWindowSeconds,
       simAmount: config.simulation.amountUsd,
       maxPositions: config.strategy.maxSimultaneousPositions,
       minBtcDistance: config.strategy.minBtcDistanceUsd,
+      stopLoss: config.strategy.stopLossEnabled
+        ? config.strategy.stopLossThreshold
+        : "disabled",
     },
     "Configuration loaded",
   );

@@ -149,10 +149,13 @@ export class ApiServer {
           config: {
             marketWindow: config.strategy.marketWindow,
             entryPriceThreshold: config.strategy.entryPriceThreshold,
+            maxEntryPrice: config.strategy.maxEntryPrice,
             tradeFromWindowSeconds: config.strategy.tradeFromWindowSeconds,
             simulationAmountUsd: config.simulation.amountUsd,
             maxSimultaneousPositions: config.strategy.maxSimultaneousPositions,
             minBtcDistanceUsd: config.strategy.minBtcDistanceUsd,
+            stopLossEnabled: config.strategy.stopLossEnabled,
+            stopLossThreshold: config.strategy.stopLossThreshold,
           },
         });
       } catch (error) {

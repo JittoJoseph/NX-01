@@ -97,10 +97,13 @@ export const ConfigSchema = z.object({
   strategy: z.object({
     marketWindow: z.enum(MARKET_WINDOWS),
     tradeFromWindowSeconds: z.number().min(5).max(600),
-    entryPriceThreshold: z.number().min(0.9).max(0.99),
+    entryPriceThreshold: z.number().min(0.5).max(0.99),
+    maxEntryPrice: z.number().min(0.5).max(0.99),
     maxSimultaneousPositions: z.number().min(1).max(100),
     minBtcDistanceUsd: z.number().min(0).max(100000),
     scanIntervalMs: z.number().min(10000),
+    stopLossEnabled: z.boolean(),
+    stopLossThreshold: z.number().min(0.01).max(0.95),
   }),
   wipe: z.object({
     password: z.string().min(1),
