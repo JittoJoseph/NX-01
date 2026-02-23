@@ -114,12 +114,8 @@ export class BtcPriceWatcher extends EventEmitter {
         logger.info("RTDS WebSocket connected");
         this.reconnectAttempt = 0;
 
-        // Subscribe to Chainlink (btc/usd, filtered) + Binance (all symbols).
-        // IMPORTANT: Binance rejects any `filters` value with a 400 error and
-        // silently drops the subscription — so we omit `filters` for Binance
-        // and filter to btcusdt in the message handler instead.
-        // Chainlink's {"symbol":"btc/usd"} object filter works correctly and
-        // also sends a historical backfill array on connect.
+        // Subscribe to Chainlink (btc/usd, filtered) + Binance (btcusdt, filtered).
+        // IMPORTANT: According to RTDS docs, filters should work for both.
         const subscribeMsg = JSON.stringify({
           action: "subscribe",
           subscriptions: [
@@ -128,7 +124,7 @@ export class BtcPriceWatcher extends EventEmitter {
               type: "*",
               filters: '{"symbol":"btc/usd"}',
             },
-            { topic: "crypto_prices", type: "update" },
+            { topic: "crypto_prices", type: "*", filters: "btcusdt" },
           ],
         });
         this.ws!.send(subscribeMsg);
@@ -170,6 +166,25 @@ export class BtcPriceWatcher extends EventEmitter {
 
           // Chainlink: topic="crypto_prices_chainlink", payload.symbol="btc/usd"
           if (topic === "crypto_prices_chainlink") {
+            // Handle array of historical prices (backfill on connect)
+            if (Array.isArray(payload)) {
+              for (const item of payload) {
+                if (
+                  item &&
+                  typeof item === "object" &&
+                  (item as any).symbol === "btc/usd" &&
+                  typeof (item as any).value === "number"
+                ) {
+                  const rawTs =
+                    typeof (item as any).timestamp === "number"
+                      ? ((item as any).timestamp as number)
+                      : ((msg["timestamp"] as number) ?? 0);
+                  this.setPrice((item as any).value as number, rawTs);
+                }
+              }
+              return;
+            }
+            // Handle single price update
             if (
               payload?.["symbol"] === "btc/usd" &&
               typeof payload["value"] === "number"
