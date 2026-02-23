@@ -9,10 +9,11 @@ const logger = createModuleLogger("btc-price-watcher");
 /**
  * BTC price watcher via Polymarket RTDS WebSocket (wss://ws-live-data.polymarket.com).
  *
- * Subscribes to both Binance (crypto_prices/btcusdt) and Chainlink
- * (crypto_prices_chainlink/btc/usd) topics — whichever fires first sets the price.
- * Binance fires on every tick; Chainlink fires on deviation. Together they give
- * reliable, high-frequency coverage.
+ * Subscribes to:
+ *  - Chainlink (crypto_prices_chainlink, btc/usd) — ~1 tick/sec, filtered to BTC only.
+ *    Also sends a historical backfill on subscribe that pre-seeds priceHistory.
+ *  - Binance (crypto_prices) — no filter (plain-string filters cause a 400 error);
+ *    we accept all symbols and pick btcusdt in the message handler.
  *
  * All timestamps stored as wall-clock Date.now() so getPriceAt() comparisons
  * against Date.now() are consistent.
@@ -113,17 +114,21 @@ export class BtcPriceWatcher extends EventEmitter {
         logger.info("RTDS WebSocket connected");
         this.reconnectAttempt = 0;
 
-        // Subscribe to Binance + Chainlink BTC price topics simultaneously.
-        // Either firing updates our price.
+        // Subscribe to Chainlink (btc/usd, filtered) + Binance (all symbols).
+        // IMPORTANT: Binance rejects any `filters` value with a 400 error and
+        // silently drops the subscription — so we omit `filters` for Binance
+        // and filter to btcusdt in the message handler instead.
+        // Chainlink's {"symbol":"btc/usd"} object filter works correctly and
+        // also sends a historical backfill array on connect.
         const subscribeMsg = JSON.stringify({
           action: "subscribe",
           subscriptions: [
-            { topic: "crypto_prices", type: "update", filters: "btcusdt" },
             {
               topic: "crypto_prices_chainlink",
               type: "*",
-              filters: JSON.stringify({ symbol: "btc/usd" }),
+              filters: '{"symbol":"btc/usd"}',
             },
+            { topic: "crypto_prices", type: "update" },
           ],
         });
         this.ws!.send(subscribeMsg);
