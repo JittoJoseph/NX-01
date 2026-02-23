@@ -170,14 +170,16 @@ export class ApiServer {
     this.app.get("/api/active-market", (_req, res) => {
       const orchestrator = getMarketOrchestrator();
       const liveMarkets = orchestrator.getLiveMarkets();
-      
+
       if (liveMarkets.length === 0) {
         res.status(204).end();
         return;
       }
 
       // Sort by recency (most recent end date first)
-      liveMarkets.sort((a, b) => new Date(b.endDate).getTime() - new Date(a.endDate).getTime());
+      liveMarkets.sort(
+        (a, b) => new Date(b.endDate).getTime() - new Date(a.endDate).getTime(),
+      );
 
       // Prioritize by status: ACTIVE > ENDED > UPCOMING
       const primary =

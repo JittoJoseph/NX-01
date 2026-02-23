@@ -29,13 +29,12 @@ export class BtcPriceWatcher extends EventEmitter {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
 
-  /** Rolling 20-min buffer of BTC ticks. Timestamps are wall-clock ms (Date.now()). */
+  /** Rolling 60-min buffer of BTC ticks for accurate historical lookups */
   private priceHistory: Array<{ price: number; timestamp: number }> = [];
-
   private static readonly PING_INTERVAL = 5_000;
   private static readonly MAX_RECONNECT_DELAY = 30_000;
   private static readonly BASE_RECONNECT_DELAY = 1_000;
-  private static readonly HISTORY_TTL_MS = 20 * 60 * 1_000;
+  private static readonly HISTORY_TTL_MS = 60 * 60 * 1_000; // 60 minutes
 
   start(): void {
     if (this.running) return;
@@ -71,6 +70,7 @@ export class BtcPriceWatcher extends EventEmitter {
 
   /** Last known BTC/USD price at or before `targetMs` (wall-clock ms). */
   getPriceAt(targetMs: number): number | null {
+    // Find the most recent price at or before targetMs
     let best: { price: number; timestamp: number } | null = null;
     for (const entry of this.priceHistory) {
       if (entry.timestamp <= targetMs) {
@@ -79,6 +79,19 @@ export class BtcPriceWatcher extends EventEmitter {
         }
       }
     }
+
+    if (best) {
+      logger.debug(
+        { targetMs, foundTs: best.timestamp, price: best.price, ageMs: Date.now() - best.timestamp },
+        "Found historical BTC price"
+      );
+    } else {
+      logger.warn(
+        { targetMs, historySize: this.priceHistory.length, oldestTs: this.priceHistory[0]?.timestamp },
+        "No historical BTC price found for target time"
+      );
+    }
+
     return best?.price ?? null;
   }
 
@@ -114,8 +127,8 @@ export class BtcPriceWatcher extends EventEmitter {
         logger.info("RTDS WebSocket connected");
         this.reconnectAttempt = 0;
 
-        // Subscribe to Chainlink (btc/usd, filtered) + Binance (btcusdt, filtered).
-        // IMPORTANT: According to RTDS docs, filters should work for both.
+        // Subscribe to Chainlink (btc/usd, filtered) + Binance (all symbols, filter in code).
+        // crypto_prices filters may not work reliably, so filter btusdt in message handler.
         const subscribeMsg = JSON.stringify({
           action: "subscribe",
           subscriptions: [
@@ -124,7 +137,7 @@ export class BtcPriceWatcher extends EventEmitter {
               type: "*",
               filters: '{"symbol":"btc/usd"}',
             },
-            { topic: "crypto_prices", type: "*", filters: "btcusdt" },
+            { topic: "crypto_prices", type: "*" },
           ],
         });
         this.ws!.send(subscribeMsg);
@@ -164,26 +177,8 @@ export class BtcPriceWatcher extends EventEmitter {
             }
           }
 
-          // Chainlink: topic="crypto_prices_chainlink", payload.symbol="btc/usd"
+          // Chainlink: topic="crypto_prices_chainlink" for real-time, topic="crypto_prices" for backfill
           if (topic === "crypto_prices_chainlink") {
-            // Handle array of historical prices (backfill on connect)
-            if (Array.isArray(payload)) {
-              for (const item of payload) {
-                if (
-                  item &&
-                  typeof item === "object" &&
-                  (item as any).symbol === "btc/usd" &&
-                  typeof (item as any).value === "number"
-                ) {
-                  const rawTs =
-                    typeof (item as any).timestamp === "number"
-                      ? ((item as any).timestamp as number)
-                      : ((msg["timestamp"] as number) ?? 0);
-                  this.setPrice((item as any).value as number, rawTs);
-                }
-              }
-              return;
-            }
             // Handle single price update
             if (
               payload?.["symbol"] === "btc/usd" &&
@@ -194,6 +189,23 @@ export class BtcPriceWatcher extends EventEmitter {
                   ? (payload["timestamp"] as number)
                   : ((msg["timestamp"] as number) ?? 0);
               this.setPrice(payload["value"] as number, rawTs);
+              return;
+            }
+          }
+
+          // Handle Chainlink backfill (comes through crypto_prices topic with type="subscribe")
+          if (topic === "crypto_prices" && msg.type === "subscribe") {
+            if (payload?.["symbol"] === "btc/usd" && Array.isArray(payload["data"])) {
+              for (const item of payload["data"]) {
+                if (
+                  item &&
+                  typeof item === "object" &&
+                  typeof (item as any).timestamp === "number" &&
+                  typeof (item as any).value === "number"
+                ) {
+                  this.setPrice((item as any).value as number, (item as any).timestamp as number);
+                }
+              }
               return;
             }
           }

@@ -100,19 +100,19 @@ export class MarketScanner extends EventEmitter {
       Math.floor(nowSeconds / durationSeconds) * durationSeconds;
 
     const slugs: string[] = [];
-    
+
     // Include recent past windows
     for (let i = MarketScanner.LOOKBEHIND_WINDOWS; i > 0; i--) {
       const windowStart = currentWindowStart - i * durationSeconds;
       slugs.push(`${windowConfig.slugPrefix}-${windowStart}`);
     }
-    
+
     // Include current and future windows
     for (let i = 0; i < MarketScanner.LOOKAHEAD_WINDOWS; i++) {
       const windowStart = currentWindowStart + i * durationSeconds;
       slugs.push(`${windowConfig.slugPrefix}-${windowStart}`);
     }
-    
+
     return slugs;
   }
 

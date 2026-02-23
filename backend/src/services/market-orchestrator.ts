@@ -292,9 +292,8 @@ export class MarketOrchestrator extends EventEmitter {
 
   /**
    * Fill btcPriceAtWindowStart for any market whose window is now open.
-   * Uses the price history buffer first (best accuracy), then the current
-   * live price as fallback. Called on BTC ticks AND CLOB price updates
-   * so the fill happens within seconds of the window opening.
+   * Uses historical BTC price data for accuracy. Only falls back to current
+   * price for markets loaded on restart where historical data isn't available.
    */
   private tryFillBtcWindowStart(): void {
     const nowMs = Date.now();
@@ -308,10 +307,20 @@ export class MarketOrchestrator extends EventEmitter {
       const windowStartMs = state.endDate.getTime() - windowDurationMs;
       if (nowMs < windowStartMs) continue; // window not open yet
 
-      const resolved =
-        this.btcWatcher.getPriceAt(windowStartMs) ??
-        this.btcWatcher.getCurrentPrice()?.price ??
-        null;
+      // Try to get exact historical price first
+      let resolved = this.btcWatcher.getPriceAt(windowStartMs);
+
+      // For markets loaded on restart, if no historical data, use current price
+      // This is acceptable since the system wasn't running when the window opened
+      if (resolved === null) {
+        resolved = this.btcWatcher.getCurrentPrice()?.price ?? null;
+        if (resolved !== null) {
+          logger.info(
+            { marketId: state.marketId, windowStartMs, btcPrice: resolved },
+            "Using current BTC price for restarted market (no historical data available)"
+          );
+        }
+      }
 
       if (resolved === null) continue; // no BTC data yet
 
@@ -1102,7 +1111,12 @@ export class MarketOrchestrator extends EventEmitter {
       const tokenIds = row.clobTokenIds as string[] | null;
       const outcomes = row.outcomes as string[] | null;
 
-      if (!tokenIds || tokenIds.length < 2 || !outcomes || outcomes.length < 2) {
+      if (
+        !tokenIds ||
+        tokenIds.length < 2 ||
+        !outcomes ||
+        outcomes.length < 2
+      ) {
         logger.warn(
           { marketId: row.id },
           "Skipping market with invalid token IDs or outcomes",
