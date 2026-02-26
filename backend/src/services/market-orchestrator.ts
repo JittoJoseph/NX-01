@@ -1200,6 +1200,18 @@ export class MarketOrchestrator extends EventEmitter {
       this.wsWatcher.subscribe(tokenIds);
       state.subscribedWs = true;
 
+      // For ENDED markets with open positions, the CLOB has stopped streaming.
+      // Fetch current midpoints once via REST so lastPrices is seeded immediately
+      // and the frontend can show a real price rather than a blank on first load.
+      if (endDate.getTime() < Date.now() && hasOpenPositions) {
+        this.seedLastPricesForEndedMarket(state).catch((err) =>
+          logger.debug(
+            { err, marketId: row.id },
+            "Could not seed prices for ended market — will show pending",
+          ),
+        );
+      }
+
       logger.info(
         {
           marketId: row.id,
@@ -1218,6 +1230,44 @@ export class MarketOrchestrator extends EventEmitter {
       );
     }
   }
+
+  /**
+   * Fetch CLOB midpoints for both tokens of an ended market and seed lastPrices.
+   *
+   * Called once on startup for markets that have ended but still have open positions.
+   * After market close the CLOB stops streaming WS updates, so without this the
+   * frontend has no price to display while waiting for oracle resolution.
+   */
+  private async seedLastPricesForEndedMarket(
+    state: ActiveMarketState,
+  ): Promise<void> {
+    const tokenIds = [state.yesTokenId, state.noTokenId];
+
+    await Promise.all(
+      tokenIds.map(async (tokenId) => {
+        try {
+          const { mid: midStr } = await this.client.getMidpoint(tokenId);
+          const mid = parseFloat(midStr);
+          if (!isFinite(mid) || mid <= 0) return;
+
+          // Approximate bid/ask as ±0.5¢ around mid (no real spread data needed)
+          state.lastPrices[tokenId] = {
+            bid: Math.max(0, mid - 0.005),
+            ask: Math.min(1, mid + 0.005),
+            mid,
+          };
+
+          logger.debug(
+            { marketId: state.marketId, tokenId, mid: mid.toFixed(4) },
+            "Seeded lastPrices for ended market from CLOB midpoint",
+          );
+        } catch {
+          // Non-fatal: if CLOB can't quote an expired token, we just won't have a price
+        }
+      }),
+    );
+  }
+
 
   /**
    * Periodically remove expired markets that have no open positions.
