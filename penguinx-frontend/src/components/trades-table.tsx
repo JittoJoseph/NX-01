@@ -93,23 +93,26 @@ export function TradesTable({
             const exitCents =
               exitPrice !== null ? Math.round(exitPrice * 100) : null;
 
-            // After market endDate passes, CLOB prices are noise (awaiting oracle
-            // resolution). Don't show a live price that would look like a loss.
-            const marketEndDate =
-              isOpen && trade.marketId && marketEndDates[trade.marketId]
-                ? new Date(marketEndDates[trade.marketId]!)
-                : null;
-            const marketHasEnded =
-              marketEndDate !== null && marketEndDate.getTime() <= Date.now();
-
-            // Live price for open trades — only while window is still open
+            // After market endDate passes the oracle hasn't resolved yet —
+            // the CLOB WS still quotes the token until final settlement.
+            // Keep showing the live price so we can track PnL while we wait.
             const livePrice =
-              isOpen && !marketHasEnded && trade.tokenId
+              isOpen && trade.tokenId
                 ? (livePrices[trade.tokenId] ?? null)
                 : null;
             const liveMid = livePrice?.mid ?? null;
             const liveCents =
               liveMid !== null ? Math.round(liveMid * 100) : null;
+
+            // isPending: market window closed but trade not yet resolved
+            const marketEndDate =
+              isOpen && trade.marketId && marketEndDates[trade.marketId]
+                ? new Date(marketEndDates[trade.marketId]!)
+                : null;
+            const isPending =
+              isOpen &&
+              marketEndDate !== null &&
+              marketEndDate.getTime() <= Date.now();
 
             // Unrealized P&L for open trades: (currentMid - entryPrice) * shares - fees
             const unrealizedPnl =
@@ -177,11 +180,7 @@ export function TradesTable({
 
                 {/* EXIT */}
                 <td className="py-3 px-3 text-right">
-                  {isOpen && marketHasEnded ? (
-                    <span className="text-[10px] font-mono text-amber-500/80 px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/20">
-                      PENDING
-                    </span>
-                  ) : exitCents !== null ? (
+                  {exitCents !== null ? (
                     <span
                       className={`tabular-nums font-medium ${
                         exitCents >= entryCents
@@ -202,10 +201,16 @@ export function TradesTable({
                       >
                         {liveCents}¢
                       </span>
-                      <span className="text-[9px] text-blue-400 font-mono">
-                        ● LIVE
+                      <span className={`text-[9px] font-mono ${
+                        isPending ? "text-amber-400" : "text-blue-400"
+                      }`}>
+                        ● {isPending ? "SETTLING" : "LIVE"}
                       </span>
                     </div>
+                  ) : isPending ? (
+                    <span className="text-[10px] font-mono text-amber-500/80 px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/20">
+                      PENDING
+                    </span>
                   ) : (
                     <span className="text-muted-foreground/40">—</span>
                   )}
@@ -280,6 +285,11 @@ export function TradesTable({
                       }`}
                     >
                       {trade.exitOutcome || "SETTLED"}
+                    </span>
+                  ) : isPending ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                      <span className="w-1 h-1 rounded-full bg-amber-400 animate-pulse" />
+                      PENDING
                     </span>
                   ) : (
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-blue-500/10 text-blue-500">
