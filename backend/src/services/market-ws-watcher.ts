@@ -12,6 +12,7 @@ import type {
   MarketSubscriptionMessage,
   SubscriptionUpdateMessage,
 } from "../interfaces/websocket-types.js";
+import { logAudit } from "../db/client.js";
 
 const logger = createModuleLogger("market-ws-watcher");
 
@@ -160,6 +161,7 @@ export class MarketWebSocketWatcher extends EventEmitter {
           { code, reason: reason.toString() },
           "CLOB WebSocket closed",
         );
+        logAudit("warn", "SYSTEM", `CLOB WebSocket closed (code: ${code})`).catch(() => {});
         this.cleanup();
         this.emit("disconnected", { code, reason: reason.toString() });
         this.scheduleReconnect();
@@ -167,6 +169,7 @@ export class MarketWebSocketWatcher extends EventEmitter {
 
       this.ws.on("error", (error: Error) => {
         logger.error({ error: error.message }, "CLOB WebSocket error");
+        logAudit("error", "SYSTEM", `CLOB WebSocket error: ${error.message}`).catch(() => {});
         this.emit("error", error);
       });
     } catch (error) {

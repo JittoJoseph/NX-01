@@ -3,6 +3,7 @@ import WebSocket from "ws";
 import { createModuleLogger } from "../utils/logger.js";
 import { POLY_URLS, type MomentumSignal } from "../types/index.js";
 import type { BtcPriceData } from "../interfaces/websocket-types.js";
+import { logAudit } from "../db/client.js";
 
 const logger = createModuleLogger("btc-price-watcher");
 
@@ -19,6 +20,12 @@ const logger = createModuleLogger("btc-price-watcher");
  * against Date.now() are consistent.
  *
  * Emits: "btcPriceUpdate" { price, timestamp }
+ *
+ * Staleness watchdog: if no price tick arrives within STALE_THRESHOLD_MS, the
+ * WebSocket is force-closed and reconnected even if readyState === OPEN.
+ * This auto-heals the "BTC price frozen while btcConnected=true" bug where the
+ * RTDS server stops sending crypto_prices/crypto_prices_chainlink messages
+ * without closing the connection.
  */
 export class BtcPriceWatcher extends EventEmitter {
   private ws: WebSocket | null = null;
@@ -29,17 +36,37 @@ export class BtcPriceWatcher extends EventEmitter {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
 
+  /**
+   * Staleness watchdog: timestamp of last setPrice() call (wall-clock ms).
+   * Initialized to 0 so the watchdog only fires after the first tick arrives
+   * AND stops. Does NOT fire on initial connect before first tick.
+   */
+  private lastPriceReceivedMs: number = 0;
+  private stalenessWatchdog: ReturnType<typeof setInterval> | null = null;
+
   /** Rolling 60-min buffer of BTC ticks for accurate historical lookups */
   private priceHistory: Array<{ price: number; timestamp: number }> = [];
+
   private static readonly PING_INTERVAL = 5_000;
   private static readonly MAX_RECONNECT_DELAY = 30_000;
   private static readonly BASE_RECONNECT_DELAY = 1_000;
   private static readonly HISTORY_TTL_MS = 60 * 60 * 1_000; // 60 minutes
 
+  /**
+   * How long without a tick before we force-reconnect.
+   * Set conservatively: Chainlink ticks ~1/sec, Binance ticks ~1-2/sec in normal mode.
+   * 30s covers brief server-side pauses without being too aggressive.
+   */
+  private static readonly STALE_THRESHOLD_MS = 30_000;
+
+  /** How often we check for staleness */
+  private static readonly STALE_CHECK_INTERVAL_MS = 10_000;
+
   start(): void {
     if (this.running) return;
     this.running = true;
     this.connect();
+    this.startStalenessWatchdog();
     logger.info("BTC price watcher started");
   }
 
@@ -52,6 +79,10 @@ export class BtcPriceWatcher extends EventEmitter {
     if (this.pingTimer) {
       clearInterval(this.pingTimer);
       this.pingTimer = null;
+    }
+    if (this.stalenessWatchdog) {
+      clearInterval(this.stalenessWatchdog);
+      this.stalenessWatchdog = null;
     }
     if (this.ws) {
       this.ws.removeAllListeners();
@@ -66,6 +97,18 @@ export class BtcPriceWatcher extends EventEmitter {
   getCurrentPrice(): BtcPriceData | null {
     if (this.currentPrice === null) return null;
     return { price: this.currentPrice, timestamp: this.lastTimestamp };
+  }
+
+  /** Wall-clock age of the last BTC price tick in milliseconds. */
+  getPriceAgeMs(): number {
+    if (this.lastPriceReceivedMs === 0) return -1; // never received
+    return Date.now() - this.lastPriceReceivedMs;
+  }
+
+  /** True if the last price tick was received within STALE_THRESHOLD_MS. */
+  isPriceFresh(): boolean {
+    if (this.lastPriceReceivedMs === 0) return false;
+    return this.getPriceAgeMs() < BtcPriceWatcher.STALE_THRESHOLD_MS;
   }
 
   /** Last known BTC/USD price at or before `targetMs` (wall-clock ms). */
@@ -167,7 +210,9 @@ export class BtcPriceWatcher extends EventEmitter {
     const timestamp = Date.now();
     this.currentPrice = price;
     this.lastTimestamp = timestamp;
+    this.lastPriceReceivedMs = timestamp; // Update staleness watchdog reference
     this.priceHistory.push({ price, timestamp });
+
     const cutoff = Date.now() - BtcPriceWatcher.HISTORY_TTL_MS;
     let pruneIdx = 0;
     while (
@@ -177,7 +222,87 @@ export class BtcPriceWatcher extends EventEmitter {
       pruneIdx++;
     }
     if (pruneIdx > 0) this.priceHistory = this.priceHistory.slice(pruneIdx);
+
     this.emit("btcPriceUpdate", { price, timestamp } satisfies BtcPriceData);
+  }
+
+  /**
+   * Starts a periodic staleness check.
+   *
+   * If we have received at least one price tick (lastPriceReceivedMs > 0) and
+   * it was more than STALE_THRESHOLD_MS ago, we force-close and reconnect the
+   * RTDS WebSocket. This handles the bug where the RTDS server stops sending
+   * messages without closing the connection (ws.readyState remains OPEN).
+   */
+  private startStalenessWatchdog(): void {
+    if (this.stalenessWatchdog) return;
+
+    this.stalenessWatchdog = setInterval(() => {
+      if (!this.running) return;
+
+      // Only check if we've received at least one tick already
+      // (avoids false positives on initial connect before first message)
+      if (this.lastPriceReceivedMs === 0) return;
+
+      const ageMs = Date.now() - this.lastPriceReceivedMs;
+      if (ageMs < BtcPriceWatcher.STALE_THRESHOLD_MS) return;
+
+      logger.warn(
+        {
+          ageMs,
+          lastPrice: this.currentPrice,
+          lastPriceAt: new Date(this.lastPriceReceivedMs).toISOString(),
+          wsReadyState: this.ws?.readyState,
+          staleThresholdMs: BtcPriceWatcher.STALE_THRESHOLD_MS,
+        },
+        "BTC price feed stale — force-reconnecting RTDS WebSocket",
+      );
+
+      logAudit(
+        "warn",
+        "SYSTEM",
+        "BTC price feed stale (no ticks for >30s). Force-reconnecting to auto-heal."
+      ).catch(() => {});
+
+      // Force-close the existing WebSocket (even if readyState === OPEN)
+      // and trigger a fresh reconnect. This is the key fix: the OS-level
+      // TCP connection can remain open while the server silently stops
+      // sending messages, so we cannot rely on the close event.
+      this.forceReconnect();
+    }, BtcPriceWatcher.STALE_CHECK_INTERVAL_MS);
+  }
+
+  /**
+   * Forcefully closes the current WebSocket (if any) and immediately schedules
+   * a reconnect. Unlike scheduleReconnect(), this does NOT use exponential
+   * backoff — we've been stuck for 30+ seconds already, so reconnect fast.
+   */
+  private forceReconnect(): void {
+    if (!this.running) return;
+
+    // Cancel any pending reconnect timer
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    // Forcefully destroy the current connection
+    if (this.ws) {
+      this.ws.removeAllListeners();
+      try {
+        this.ws.terminate(); // Hard close — does not go through close handshake
+      } catch {
+        // ignore
+      }
+      this.ws = null;
+    }
+
+    this.cleanup();
+    this.reconnectAttempt = 0; // Reset backoff so we reconnect quickly
+
+    // Reconnect immediately
+    logger.info("Force-reconnecting RTDS WebSocket due to stale price feed");
+    this.connect();
   }
 
   private connect(): void {
@@ -191,7 +316,7 @@ export class BtcPriceWatcher extends EventEmitter {
         this.reconnectAttempt = 0;
 
         // Subscribe to Chainlink (btc/usd, filtered) + Binance (all symbols, filter in code).
-        // crypto_prices filters may not work reliably, so filter btusdt in message handler.
+        // crypto_prices filters may not work reliably, so filter btcusdt in message handler.
         const subscribeMsg = JSON.stringify({
           action: "subscribe",
           subscriptions: [
@@ -225,58 +350,26 @@ export class BtcPriceWatcher extends EventEmitter {
           const topic = msg["topic"] as string | undefined;
           const payload = msg["payload"] as Record<string, unknown> | undefined;
 
-          // Binance: topic="crypto_prices", payload.symbol="btcusdt"
-          if (topic === "crypto_prices") {
-            if (
-              payload?.["symbol"] === "btcusdt" &&
-              typeof payload["value"] === "number"
-            ) {
-              const rawTs =
-                typeof payload["timestamp"] === "number"
-                  ? (payload["timestamp"] as number)
-                  : ((msg["timestamp"] as number) ?? 0);
-              this.setPrice(payload["value"] as number, rawTs);
-              return;
-            }
-          }
+          // Consolidate real-time Binance and Chainlink logic
+          const isBinance = topic === "crypto_prices" && payload?.["symbol"] === "btcusdt";
+          const isChainlink = topic === "crypto_prices_chainlink" && payload?.["symbol"] === "btc/usd";
 
-          // Chainlink: topic="crypto_prices_chainlink" for real-time, topic="crypto_prices" for backfill
-          if (topic === "crypto_prices_chainlink") {
-            // Handle single price update
-            if (
-              payload?.["symbol"] === "btc/usd" &&
-              typeof payload["value"] === "number"
-            ) {
-              const rawTs =
-                typeof payload["timestamp"] === "number"
-                  ? (payload["timestamp"] as number)
-                  : ((msg["timestamp"] as number) ?? 0);
-              this.setPrice(payload["value"] as number, rawTs);
-              return;
-            }
+          if ((isBinance || isChainlink) && typeof payload?.["value"] === "number") {
+            const rawTs = typeof payload["timestamp"] === "number"
+              ? payload["timestamp"]
+              : ((msg["timestamp"] as number) ?? 0);
+            this.setPrice(payload["value"] as number, rawTs);
+            return;
           }
 
           // Handle Chainlink backfill (comes through crypto_prices topic with type="subscribe")
-          if (topic === "crypto_prices" && msg.type === "subscribe") {
-            if (
-              payload?.["symbol"] === "btc/usd" &&
-              Array.isArray(payload["data"])
-            ) {
-              for (const item of payload["data"]) {
-                if (
-                  item &&
-                  typeof item === "object" &&
-                  typeof (item as any).timestamp === "number" &&
-                  typeof (item as any).value === "number"
-                ) {
-                  this.setPrice(
-                    (item as any).value as number,
-                    (item as any).timestamp as number,
-                  );
-                }
+          if (topic === "crypto_prices" && msg.type === "subscribe" && payload?.["symbol"] === "btc/usd" && Array.isArray(payload["data"])) {
+            for (const item of payload["data"]) {
+              if (item && typeof item === "object" && typeof (item as any).timestamp === "number" && typeof (item as any).value === "number") {
+                this.setPrice((item as any).value as number, (item as any).timestamp as number);
               }
-              return;
             }
+            return;
           }
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -289,12 +382,14 @@ export class BtcPriceWatcher extends EventEmitter {
           { code, reason: reason.toString() },
           "RTDS WebSocket closed",
         );
+        logAudit("warn", "SYSTEM", `BTC RTDS WebSocket closed (code: ${code})`).catch(() => {});
         this.cleanup();
         this.scheduleReconnect();
       });
 
       this.ws.on("error", (error: Error) => {
         logger.error({ error: error.message }, "RTDS WebSocket error");
+        logAudit("error", "SYSTEM", `BTC RTDS WebSocket error: ${error.message}`).catch(() => {});
       });
     } catch (error) {
       logger.error({ error }, "Failed to create RTDS WebSocket");

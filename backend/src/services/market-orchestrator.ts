@@ -213,6 +213,8 @@ export class MarketOrchestrator extends EventEmitter {
       strategy: this.strategyEngine.getStats(),
       btcConnected: this.btcWatcher.isConnected(),
       btcPrice: this.btcWatcher.getCurrentPrice()?.price ?? null,
+      btcPriceAgeMs: this.btcWatcher.getPriceAgeMs(),
+      btcPriceFresh: this.btcWatcher.isPriceFresh(),
       momentum,
     };
   }
@@ -719,6 +721,11 @@ export class MarketOrchestrator extends EventEmitter {
         { error, marketId: opp.marketId, tokenId: opp.tokenId },
         "Failed to execute simulated trade",
       );
+      logAudit(
+        "error",
+        "SYSTEM",
+        `Failed to execute simulated trade for market ${opp.marketId}: ${error instanceof Error ? error.message : String(error)}`
+      ).catch(() => {});
     }
   }
 
@@ -836,6 +843,7 @@ export class MarketOrchestrator extends EventEmitter {
       });
     } catch (error) {
       logger.error({ error, tradeId }, "Stop-loss execution error");
+      logAudit("error", "SYSTEM", `Stop-loss execution error for trade ${tradeId}: ${error instanceof Error ? error.message : String(error)}`).catch(() => {});
       // Reset flag to allow retry
       const position = this.openPositions.get(tradeId);
       if (position) position.stopLossTriggered = false;
@@ -946,6 +954,7 @@ export class MarketOrchestrator extends EventEmitter {
       }
     } catch (error) {
       logger.error({ error, marketId }, "Resolution poll failed");
+      logAudit("error", "SYSTEM", `Resolution poll failed for market ${marketId}: ${error instanceof Error ? error.message : String(error)}`).catch(() => {});
     }
   }
 
