@@ -13,8 +13,6 @@ const logger = createModuleLogger("btc-price-watcher");
  * Subscribes to:
  *  - Chainlink (crypto_prices_chainlink, btc/usd) — ~1 tick/sec, filtered to BTC only.
  *    Also sends a historical backfill on subscribe that pre-seeds priceHistory.
- *  - Binance (crypto_prices) — no filter (plain-string filters cause a 400 error);
- *    we accept all symbols and pick btcusdt in the message handler.
  *
  * All timestamps stored as wall-clock Date.now() so getPriceAt() comparisons
  * against Date.now() are consistent.
@@ -324,13 +322,12 @@ export class BtcPriceWatcher extends EventEmitter {
               topic: "crypto_prices_chainlink",
               type: "*",
               filters: '{"symbol":"btc/usd"}',
-            },
-            { topic: "crypto_prices", type: "*" },
+            }
           ],
         });
         this.ws!.send(subscribeMsg);
         logger.debug(
-          "RTDS subscribed: crypto_prices + crypto_prices_chainlink",
+          "RTDS subscribed: crypto_prices_chainlink",
         );
 
         // Keepalive: send TEXT "PING" every 5 s per Polymarket RTDS docs
@@ -350,11 +347,10 @@ export class BtcPriceWatcher extends EventEmitter {
           const topic = msg["topic"] as string | undefined;
           const payload = msg["payload"] as Record<string, unknown> | undefined;
 
-          // Consolidate real-time Binance and Chainlink logic
-          const isBinance = topic === "crypto_prices" && payload?.["symbol"] === "btcusdt";
+          // Real-time Chainlink logic
           const isChainlink = topic === "crypto_prices_chainlink" && payload?.["symbol"] === "btc/usd";
 
-          if ((isBinance || isChainlink) && typeof payload?.["value"] === "number") {
+          if (isChainlink && typeof payload?.["value"] === "number") {
             const rawTs = typeof payload["timestamp"] === "number"
               ? payload["timestamp"]
               : ((msg["timestamp"] as number) ?? 0);
@@ -363,7 +359,7 @@ export class BtcPriceWatcher extends EventEmitter {
           }
 
           // Handle Chainlink backfill (comes through crypto_prices topic with type="subscribe")
-          if (topic === "crypto_prices" && msg.type === "subscribe" && payload?.["symbol"] === "btc/usd" && Array.isArray(payload["data"])) {
+          if (topic === "crypto_prices" && msg["type"] === "subscribe" && payload?.["symbol"] === "btc/usd" && Array.isArray(payload["data"])) {
             for (const item of payload["data"]) {
               if (item && typeof item === "object" && typeof (item as any).timestamp === "number" && typeof (item as any).value === "number") {
                 this.setPrice((item as any).value as number, (item as any).timestamp as number);
