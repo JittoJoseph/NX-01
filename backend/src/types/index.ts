@@ -118,11 +118,13 @@ export const ConfigSchema = z.object({
     minBtcDistanceUsd: z.number().min(0).max(100000),
     scanIntervalMs: z.number().min(10000),
     stopLossEnabled: z.boolean(),
-    stopLossThreshold: z.number().min(0.01).max(0.95),
+    stopLossPriceTrigger: z.number().min(0.01).max(0.95),
     // Momentum filter
     momentumEnabled: z.boolean(),
     momentumLookbackMs: z.number().min(10_000).max(600_000),
     momentumMinChangeUsd: z.number().min(0).max(1000),
+    // Oracle confirmation: BTC must have moved this many USD past window-start in the trade direction
+    minOracleLeadUsd: z.number().min(0).max(100_000),
   }),
   wipe: z.object({
     password: z.string().min(1),

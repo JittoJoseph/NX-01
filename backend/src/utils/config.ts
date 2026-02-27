@@ -43,12 +43,15 @@ export function loadConfig(): Config {
       maxSimultaneousPositions: envNum("MAX_SIMULTANEOUS_POSITIONS", 3),
       minBtcDistanceUsd: envNum("MIN_BTC_DISTANCE_USD", 50),
       scanIntervalMs: envNum("SCAN_INTERVAL_MS", 60_000),
-      stopLossEnabled: envBool("STOP_LOSS_ENABLED", false),
-      stopLossThreshold: envNum("STOP_LOSS_THRESHOLD", 0.85),
+      // Stop-loss: sell if token bid drops below this price WHILE window is still open
+      stopLossEnabled: envBool("STOP_LOSS_ENABLED", true),
+      stopLossPriceTrigger: envNum("STOP_LOSS_PRICE_TRIGGER", 0.60),
       // Momentum filter
       momentumEnabled: envBool("MOMENTUM_ENABLED", true),
       momentumLookbackMs: envNum("MOMENTUM_LOOKBACK_MS", 90_000),
       momentumMinChangeUsd: envNum("MOMENTUM_MIN_CHANGE_USD", 30),
+      // Oracle confirmation: BTC must have crossed window-start by at least this many USD in trade direction
+      minOracleLeadUsd: envNum("MIN_ORACLE_LEAD_USD", 50),
     },
     wipe: {
       password: env("WIPE_PASSWORD"),

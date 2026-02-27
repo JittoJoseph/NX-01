@@ -37,6 +37,13 @@ export function DashboardPage() {
     price: number;
     timestamp: number;
   } | null>(null);
+  // Real-time momentum driven by btcPriceUpdate WS (falls back to stats on initial load)
+  const [momentum, setMomentum] = useState<{
+    direction: "UP" | "DOWN" | "NEUTRAL";
+    changeUsd: number;
+    lookbackMs: number;
+    hasData: boolean;
+  } | null>(null);
 
   // Data hooks — trades are WS-driven; no polling
   const { trades, loading: tradesLoading } = useTrades(undefined, 100);
@@ -52,7 +59,21 @@ export function DashboardPage() {
   const liveMarkets = useLiveMarkets();
   useWsConnection();
 
-  // BTC price from systemState WS broadcast
+  // BTC price + momentum from systemState WS broadcast
+  useWsEvent(
+    "btcPriceUpdate",
+    useCallback((msg: any) => {
+      const d = msg?.data;
+      if (d?.price && typeof d.price === "number") {
+        setBtcPrice({ price: d.price, timestamp: d.timestamp ?? Date.now() });
+      }
+      if (d?.momentum) {
+        setMomentum(d.momentum);
+      }
+    }, []),
+  );
+
+  // systemState: update markets, btcPrice fallback (btcPriceUpdate is faster but systemState seeds initial momentum)
   useWsEvent(
     "systemState",
     useCallback((msg: any) => {
@@ -60,7 +81,11 @@ export function DashboardPage() {
       if (d?.btcPrice && typeof d.btcPrice === "object") {
         setBtcPrice(d.btcPrice);
       }
-    }, []),
+      // Only seed momentum from systemState if we don't have a live value yet
+      if (d?.momentum && !momentum) {
+        setMomentum(d.momentum);
+      }
+    }, [momentum]),
   );
 
   // Primary live market: soonest-expiring ACTIVE window, or next UPCOMING if none open
@@ -280,21 +305,25 @@ export function DashboardPage() {
                     value={stats.orchestrator.btcConnected ? "LIVE" : "OFFLINE"}
                     accent={stats.orchestrator.btcConnected}
                   />
-                  {stats.orchestrator.momentum && (
+                  {/* Use live WS-driven momentum (updates every BTC tick ~1s) */}
+                  {(momentum ?? stats.orchestrator.momentum) && (
                     <StatRow
                       label="Momentum"
-                      value={`${stats.orchestrator.momentum.direction} ${
-                        stats.orchestrator.momentum.changeUsd >= 0 ? "+" : ""
-                      }$${Math.abs(stats.orchestrator.momentum.changeUsd).toFixed(0)}`}
-                      accent={stats.orchestrator.momentum.direction === "UP"}
-                      warn={stats.orchestrator.momentum.direction === "DOWN"}
+                      value={`${
+                        (momentum ?? stats.orchestrator.momentum)!.direction
+                      } ${
+                        (momentum ?? stats.orchestrator.momentum)!.changeUsd >= 0 ? "+" : ""
+                      }$${Math.abs(
+                        (momentum ?? stats.orchestrator.momentum)!.changeUsd,
+                      ).toFixed(0)}`}
+                      accent={(momentum ?? stats.orchestrator.momentum)!.direction === "UP"}
+                      warn={(momentum ?? stats.orchestrator.momentum)!.direction === "DOWN"}
                     />
                   )}
                 </div>
               ) : null}
             </SidebarCard>
 
-            {/* Configuration */}
             <SidebarCard title="CONFIGURATION">
               {stats?.config ? (
                 <div className="space-y-2 text-xs font-mono">
@@ -318,11 +347,17 @@ export function DashboardPage() {
                     label="BTC Min Dist"
                     value={`$${stats.config.minBtcDistanceUsd}`}
                   />
+                  {(stats.config as any).minOracleLeadUsd !== undefined && (
+                    <StatRow
+                      label="Oracle Lead"
+                      value={`$${(stats.config as any).minOracleLeadUsd}`}
+                    />
+                  )}
                   <StatRow
                     label="Stop Loss"
                     value={
                       stats.config.stopLossEnabled
-                        ? `${(stats.config.stopLossThreshold * 100).toFixed(0)}¢ trigger`
+                        ? `${((stats.config as any).stopLossPriceTrigger * 100).toFixed(0)}¢ trigger`
                         : "DISABLED"
                     }
                     accent={stats.config.stopLossEnabled}

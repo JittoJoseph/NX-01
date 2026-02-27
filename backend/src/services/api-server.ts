@@ -72,11 +72,19 @@ export class ApiServer {
       this.broadcast({ type: "tradeResolved", data }),
     );
 
-    // BTC price updates
+    // BTC price updates — also carry the latest momentum signal so the
+    // frontend gets real-time momentum updates on every tick, not just every 2s.
     const btcWatcher = getBtcPriceWatcher();
-    btcWatcher.on("btcPriceUpdate", (data) =>
-      this.broadcast({ type: "btcPriceUpdate", data }),
-    );
+    btcWatcher.on("btcPriceUpdate", (data) => {
+      const config = getConfig();
+      const momentum = config.strategy.momentumEnabled
+        ? btcWatcher.getMomentum(
+            config.strategy.momentumLookbackMs,
+            config.strategy.momentumMinChangeUsd,
+          )
+        : null;
+      this.broadcast({ type: "btcPriceUpdate", data: { ...data, momentum } });
+    });
 
     return new Promise((resolve) => {
       this.server!.listen(config.server.port, config.server.host, () => {
@@ -154,8 +162,9 @@ export class ApiServer {
             simulationAmountUsd: config.simulation.amountUsd,
             maxSimultaneousPositions: config.strategy.maxSimultaneousPositions,
             minBtcDistanceUsd: config.strategy.minBtcDistanceUsd,
+            minOracleLeadUsd: config.strategy.minOracleLeadUsd,
             stopLossEnabled: config.strategy.stopLossEnabled,
-            stopLossThreshold: config.strategy.stopLossThreshold,
+            stopLossPriceTrigger: config.strategy.stopLossPriceTrigger,
             momentumEnabled: config.strategy.momentumEnabled,
             momentumLookbackMs: config.strategy.momentumLookbackMs,
             momentumMinChangeUsd: config.strategy.momentumMinChangeUsd,

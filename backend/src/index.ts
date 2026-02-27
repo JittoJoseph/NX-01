@@ -25,7 +25,7 @@ async function main(): Promise<void> {
       maxPositions: config.strategy.maxSimultaneousPositions,
       minBtcDistance: config.strategy.minBtcDistanceUsd,
       stopLoss: config.strategy.stopLossEnabled
-        ? config.strategy.stopLossThreshold
+        ? config.strategy.stopLossPriceTrigger
         : "disabled",
     },
     "Configuration loaded",

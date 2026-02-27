@@ -272,16 +272,16 @@ export class MarketOrchestrator extends EventEmitter {
       }
     });
 
-    // WS → price updates from CLOB
+    // WS → token price updates (price_change and best_bid_ask both call the same handler)
     this.wsWatcher.on("priceUpdate", (ev: PriceUpdateEvent) =>
-      this.onPriceUpdate(ev),
+      this.onTokenPriceUpdate(ev.tokenId, parseFloat(ev.bestBid), parseFloat(ev.bestAsk)),
     );
     this.wsWatcher.on("bestBidAskUpdate", (ev: BestBidAskEvent) =>
-      this.onBestBidAskUpdate(ev),
+      this.onTokenPriceUpdate(ev.tokenId, parseFloat(ev.bestBid), parseFloat(ev.bestAsk)),
     );
-    this.wsWatcher.on("orderbookUpdate", (ev: OrderbookUpdateEvent) =>
-      this.onOrderbookUpdate(ev),
-    );
+    this.wsWatcher.on("orderbookUpdate", (_ev: OrderbookUpdateEvent) => {
+      // Orderbook is fetched on-demand during trade execution, not cached
+    });
     this.wsWatcher.on("marketResolved", (ev: MarketResolvedEvent) =>
       this.onMarketResolved(ev),
     );
@@ -444,13 +444,12 @@ export class MarketOrchestrator extends EventEmitter {
   }
 
   /**
-   * Handle price_change events — evaluate both tokens for opportunities.
+   * Handle token price updates from CLOB WebSocket.
+   * Called by both price_change and best_bid_ask event types — both carry the
+   * same data and require the same actions (cache price, evaluate strategy, check stop-loss).
    */
-  private onPriceUpdate(ev: PriceUpdateEvent): void {
-    const tokenId = ev.tokenId;
-    const bestBid = parseFloat(ev.bestBid);
-    const bestAsk = parseFloat(ev.bestAsk);
-
+  private onTokenPriceUpdate(tokenId: string, bestBid: number, bestAsk: number): void {
+    // Update cached price for this token
     for (const state of this.activeMarkets.values()) {
       if (state.yesTokenId === tokenId || state.noTokenId === tokenId) {
         state.lastPrices[tokenId] = {
@@ -463,6 +462,7 @@ export class MarketOrchestrator extends EventEmitter {
     }
 
     this.tryFillBtcWindowStart();
+
     const config = getConfig();
     const momentumSignal = config.strategy.momentumEnabled
       ? this.btcWatcher.getMomentum(
@@ -470,6 +470,7 @@ export class MarketOrchestrator extends EventEmitter {
           config.strategy.momentumMinChangeUsd,
         )
       : null;
+
     this.strategyEngine.evaluatePrice(
       tokenId,
       bestBid,
@@ -477,50 +478,15 @@ export class MarketOrchestrator extends EventEmitter {
       this.btcWatcher.getCurrentPrice(),
       momentumSignal,
     );
+
     this.checkStopLoss(tokenId, bestBid);
   }
 
   /**
-   * Handle best_bid_ask events (custom feature).
+   * Handle full orderbook snapshots (used on-demand during trade execution, not cached).
    */
-  private onBestBidAskUpdate(ev: BestBidAskEvent): void {
-    const bestBid = parseFloat(ev.bestBid);
-    const bestAsk = parseFloat(ev.bestAsk);
-
-    for (const state of this.activeMarkets.values()) {
-      if (state.yesTokenId === ev.tokenId || state.noTokenId === ev.tokenId) {
-        state.lastPrices[ev.tokenId] = {
-          bid: bestBid,
-          ask: bestAsk,
-          mid: (bestBid + bestAsk) / 2,
-        };
-        break;
-      }
-    }
-
-    this.tryFillBtcWindowStart();
-    const config = getConfig();
-    const momentumSignal = config.strategy.momentumEnabled
-      ? this.btcWatcher.getMomentum(
-          config.strategy.momentumLookbackMs,
-          config.strategy.momentumMinChangeUsd,
-        )
-      : null;
-    this.strategyEngine.evaluatePrice(
-      ev.tokenId,
-      bestBid,
-      bestAsk,
-      this.btcWatcher.getCurrentPrice(),
-      momentumSignal,
-    );
-    this.checkStopLoss(ev.tokenId, bestBid);
-  }
-
-  /**
-   * Handle full orderbook snapshots — primarily used during opportunity evaluation.
-   */
-  private onOrderbookUpdate(ev: OrderbookUpdateEvent): void {
-    // Orderbook is used on-demand, not stored in memory
+  private onOrderbookUpdate(_ev: OrderbookUpdateEvent): void {
+    // Intentionally empty — orderbook is fetched on-demand via REST, not streamed
   }
 
   /**
@@ -731,26 +697,38 @@ export class MarketOrchestrator extends EventEmitter {
 
   // ── Stop-Loss ───────────────────────────────────────────────────────────────
 
-  /** Trigger stop-loss for any open position on `tokenId` when bid falls below threshold. */
+  /**
+   * Trigger stop-loss for any open position on `tokenId` when the bid falls
+   * below the configured trigger price.
+   *
+   * IMPORTANT: Only fires while the market window is still OPEN (endDate > now).
+   * After the window closes, all token prices drop naturally toward 0.50 during
+   * the oracle resolution phase — triggering stop-loss then would incorrectly
+   * close winning positions.
+   */
   private checkStopLoss(tokenId: string, bestBid: number): void {
     const config = getConfig();
     if (!config.strategy.stopLossEnabled) return;
 
+    const now = Date.now();
     for (const [tradeId, pos] of this.openPositions) {
       if (pos.tokenId !== tokenId) continue;
       if (pos.stopLossTriggered) continue;
-      if (pos.marketEndDate.getTime() < Date.now()) continue;
+      // 🔑 Critical guard: stop-loss must ONLY fire while the market window is open.
+      // After endDate, prices drift to ~0.50 during settlement — this would
+      // incorrectly trigger stop-loss on winning positions.
+      if (pos.marketEndDate.getTime() <= now) continue;
 
-      if (bestBid < config.strategy.stopLossThreshold) {
+      if (bestBid < config.strategy.stopLossPriceTrigger) {
         pos.stopLossTriggered = true;
         logger.warn(
           {
             tradeId,
             tokenId,
             bestBid: bestBid.toFixed(4),
-            threshold: config.strategy.stopLossThreshold,
+            trigger: config.strategy.stopLossPriceTrigger,
           },
-          "Stop-loss triggered",
+          `Stop-loss triggered: bid ${bestBid.toFixed(4)} < ${config.strategy.stopLossPriceTrigger} trigger`,
         );
         this.executeStopLoss(tradeId, pos, bestBid).catch((err) => {
           logger.error({ err, tradeId }, "Stop-loss execution failed");
@@ -780,17 +758,27 @@ export class MarketOrchestrator extends EventEmitter {
           feeRateBps = 25;
         }
 
+        // Simulate a FAK (Fill-And-Kill) market sell: walk the bid side accepting
+        // any price (limitPrice = 0). This matches what a real Polymarket limit
+        // sell at $0.00 price would do — fill all available bids then cancel remainder.
         const sellResult = simulateLimitSell(
           orderbookResult.data,
           pos.entryShares,
-          0, // panic sell — accept any bid
+          0, // accept any bid — full market sell
           feeRateBps,
         );
 
-        exitPrice =
-          sellResult.totalSharesSold > 0 ? sellResult.averagePrice : triggerBid;
+        exitPrice = sellResult.totalSharesSold > 0 ? sellResult.averagePrice : triggerBid;
         exitFees = sellResult.totalSharesSold > 0 ? sellResult.fees : 0;
+
+        if (sellResult.isPartialFill) {
+          logger.warn(
+            { tradeId, sold: sellResult.totalSharesSold, total: pos.entryShares },
+            "Stop-loss partial fill — insufficient bid liquidity",
+          );
+        }
       } else {
+        // No orderbook — use trigger bid as best approximation
         exitPrice = triggerBid;
       }
 
@@ -809,7 +797,7 @@ export class MarketOrchestrator extends EventEmitter {
       await logAudit(
         "warn",
         "STOP_LOSS",
-        `Trade ${tradeId} stop-loss executed`,
+        `Stop-loss executed for trade ${tradeId}: bid ${triggerBid.toFixed(4)} → exit @ ${exitPrice.toFixed(4)}, PnL ${pnl.toFixed(4)}`,
         {
           tradeId,
           tokenId: pos.tokenId,
@@ -831,7 +819,7 @@ export class MarketOrchestrator extends EventEmitter {
           pnl: pnl.toFixed(4),
           triggerBid: triggerBid.toFixed(4),
         },
-        "🛑 Stop-loss sell executed — partial loss realized",
+        "🛑 Stop-loss sell executed",
       );
 
       this.emit("tradeResolved", {
@@ -843,8 +831,12 @@ export class MarketOrchestrator extends EventEmitter {
       });
     } catch (error) {
       logger.error({ error, tradeId }, "Stop-loss execution error");
-      logAudit("error", "SYSTEM", `Stop-loss execution error for trade ${tradeId}: ${error instanceof Error ? error.message : String(error)}`).catch(() => {});
-      // Reset flag to allow retry
+      logAudit(
+        "error",
+        "SYSTEM",
+        `Stop-loss execution error for trade ${tradeId}: ${error instanceof Error ? error.message : String(error)}`,
+      ).catch(() => {});
+      // Reset flag to allow retry on next price tick
       const position = this.openPositions.get(tradeId);
       if (position) position.stopLossTriggered = false;
     }
