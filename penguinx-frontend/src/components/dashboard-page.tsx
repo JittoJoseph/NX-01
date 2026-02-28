@@ -6,7 +6,7 @@ import { SystemStatusIndicator } from "./system-status-indicator";
 import { TradesTable } from "./trades-table";
 import { TradeDetailPopup } from "./trade-detail-popup";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { RefreshCw, ExternalLink } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import {
   useTrades,
   useSystemStats,
@@ -15,8 +15,10 @@ import {
   useWsEvent,
   useLiveMarkets,
   useCountdown,
-  usePerformance,
+  usePerformanceRealtime,
   useActivityLog,
+  useUnrealizedPnL,
+  useAnimatedNumber,
 } from "@/lib/hooks";
 import type {
   SimulatedTrade,
@@ -76,16 +78,19 @@ export function DashboardPage() {
   // systemState: update markets, btcPrice fallback (btcPriceUpdate is faster but systemState seeds initial momentum)
   useWsEvent(
     "systemState",
-    useCallback((msg: any) => {
-      const d = msg?.data;
-      if (d?.btcPrice && typeof d.btcPrice === "object") {
-        setBtcPrice(d.btcPrice);
-      }
-      // Only seed momentum from systemState if we don't have a live value yet
-      if (d?.momentum && !momentum) {
-        setMomentum(d.momentum);
-      }
-    }, [momentum]),
+    useCallback(
+      (msg: any) => {
+        const d = msg?.data;
+        if (d?.btcPrice && typeof d.btcPrice === "object") {
+          setBtcPrice(d.btcPrice);
+        }
+        // Only seed momentum from systemState if we don't have a live value yet
+        if (d?.momentum && !momentum) {
+          setMomentum(d.momentum);
+        }
+      },
+      [momentum],
+    ),
   );
 
   // Primary live market: soonest-expiring ACTIVE window, or next UPCOMING if none open
@@ -312,12 +317,21 @@ export function DashboardPage() {
                       value={`${
                         (momentum ?? stats.orchestrator.momentum)!.direction
                       } ${
-                        (momentum ?? stats.orchestrator.momentum)!.changeUsd >= 0 ? "+" : ""
+                        (momentum ?? stats.orchestrator.momentum)!.changeUsd >=
+                        0
+                          ? "+"
+                          : ""
                       }$${Math.abs(
                         (momentum ?? stats.orchestrator.momentum)!.changeUsd,
                       ).toFixed(0)}`}
-                      accent={(momentum ?? stats.orchestrator.momentum)!.direction === "UP"}
-                      warn={(momentum ?? stats.orchestrator.momentum)!.direction === "DOWN"}
+                      accent={
+                        (momentum ?? stats.orchestrator.momentum)!.direction ===
+                        "UP"
+                      }
+                      warn={
+                        (momentum ?? stats.orchestrator.momentum)!.direction ===
+                        "DOWN"
+                      }
                     />
                   )}
                 </div>
@@ -419,11 +433,16 @@ function TopDashboardSection({
   btcPriceAtWindowStartFallback: number | null;
 }) {
   const [period, setPeriod] = useState<"1D" | "1W" | "1M" | "ALL">("ALL");
-  const {
-    performance,
-    refreshing,
-    refetch: refetchPerformance,
-  } = usePerformance(period);
+  const { performance } = usePerformanceRealtime(period);
+
+  // Get live unrealized PnL from open trades and current market prices
+  const { trades } = useTrades(undefined, 100);
+  const liveMarkets = useLiveMarkets();
+  const liveUnrealizedPnL = useUnrealizedPnL(trades, liveMarkets);
+
+  // Animate NET P&L with smooth counter
+  const netPnlBaseValue = parseFloat(performance?.totalPnl || "0");
+  const animatedNetPnl = useAnimatedNumber(netPnlBaseValue, 300);
 
   const isPaused = stats?.orchestrator.paused ?? false;
 
@@ -456,12 +475,13 @@ function TopDashboardSection({
     return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
   };
 
-  const netPnl = parseFloat(performance?.totalPnl || "0");
+  const netPnl = animatedNetPnl;
   const roi = parseFloat(performance?.roi || "0");
   const winRate = parseFloat(performance?.winRate || "0");
   const totalInvested = parseFloat(performance?.totalInvested || "0");
-  const unrealizedPnl = parseFloat(performance?.unrealizedPnl || "0");
-  const realizedPnl = netPnl - unrealizedPnl;
+  // Use live-calculated unrealized PnL instead of API value
+  const unrealizedPnl = liveUnrealizedPnL;
+  const realizedPnl = netPnlBaseValue - unrealizedPnl;
   const wins = performance?.wins || 0;
   const losses = performance?.losses || 0;
   const closedPositions = wins + losses;
@@ -738,28 +758,16 @@ function TopDashboardSection({
                 [{period}]
               </span>
             </div>
-            <div className="flex items-center gap-2">
-              <div className="flex border border-border/20 rounded overflow-hidden">
-                {(["1D", "1W", "1M", "ALL"] as const).map((p) => (
-                  <button
-                    key={p}
-                    onClick={() => setPeriod(p)}
-                    className={`text-[10px] font-mono px-2.5 py-1 transition-colors ${period === p ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"}`}
-                  >
-                    {p}
-                  </button>
-                ))}
-              </div>
-              <button
-                onClick={() => refetchPerformance()}
-                disabled={refreshing}
-                className="p-1 text-muted-foreground hover:text-foreground disabled:opacity-40 transition-colors"
-              >
-                <RefreshCw
-                  size={11}
-                  className={refreshing ? "animate-spin" : ""}
-                />
-              </button>
+            <div className="flex border border-border/20 rounded overflow-hidden">
+              {(["1D", "1W", "1M", "ALL"] as const).map((p) => (
+                <button
+                  key={p}
+                  onClick={() => setPeriod(p)}
+                  className={`text-[10px] font-mono px-2.5 py-1 transition-colors ${period === p ? "bg-muted text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                >
+                  {p}
+                </button>
+              ))}
             </div>
           </div>
 
@@ -1270,7 +1278,8 @@ function ActivityPanel({
   if (activities.length === 0) {
     return (
       <div className="p-6 text-center text-xs text-muted-foreground/40 font-mono">
-        No activity yet — trades and system events will appear here in real-time.
+        No activity yet — trades and system events will appear here in
+        real-time.
       </div>
     );
   }
@@ -1305,7 +1314,9 @@ function ActivityPanel({
                 {hasPnl && (
                   <span
                     className={`text-[9px] font-mono font-bold tabular-nums ${
-                      (entry.pnl ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"
+                      (entry.pnl ?? 0) >= 0
+                        ? "text-emerald-400"
+                        : "text-red-400"
                     }`}
                   >
                     {(entry.pnl ?? 0) >= 0 ? "+" : ""}$

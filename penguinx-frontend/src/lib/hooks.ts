@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { getApiClient, getWsClient } from "./api-client";
 import type {
   SimulatedTrade,
@@ -230,6 +230,272 @@ export function usePerformance(period: "1D" | "1W" | "1M" | "ALL" = "1D") {
 }
 
 /**
+ * Enhanced real-time performance hook.
+ *
+ * - Fetches initial performance data once on mount (for the given period)
+ * - When period changes, re-fetches fresh data
+ * - Listens to tradeOpened and tradeResolved WS events
+ * - Updates metrics in real-time (wins/losses, PnL, ROI, win rate, etc.)
+ * - Recalculates derived metrics efficiently
+ * - Does NOT poll the API after initial load
+ */
+export function usePerformanceRealtime(
+  period: "1D" | "1W" | "1M" | "ALL" = "1D",
+) {
+  const [performance, setPerformance] = useState<PerformanceMetrics | null>(
+    null,
+  );
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  // Fetch initial data on mount and when period changes
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+
+    getApiClient()
+      .getPerformance(period)
+      .then((data) => {
+        if (!cancelled) {
+          setPerformance(data);
+          setError(null);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err as Error);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [period]);
+
+  // Real-time updates from WebSocket events
+  useEffect(() => {
+    const ws = getWsClient();
+    ws.connect();
+
+    // Handle tradeOpened: increment open positions
+    const unsubOpened = ws.on("tradeOpened", (msg: WsMessage) => {
+      const trade = (msg.data as any)?.trade as SimulatedTrade | undefined;
+      if (!trade) return;
+
+      setPerformance((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          openPositions: prev.openPositions + 1,
+        };
+      });
+    });
+
+    // Handle tradeResolved: update wins/losses, PnL, and derived metrics
+    const unsubResolved = ws.on("tradeResolved", (msg: WsMessage) => {
+      const d = msg.data as any;
+      const trade = d?.trade as SimulatedTrade | undefined;
+      const isWin = d?.isWin as boolean | undefined;
+      const pnl = typeof d?.pnl === "number" ? (d.pnl as number) : 0;
+
+      if (!trade) return;
+
+      setPerformance((prev) => {
+        if (!prev) return prev;
+
+        // Update win/loss counts
+        const newWins = prev.wins + (isWin ? 1 : 0);
+        const newLosses = prev.losses + (isWin ? 0 : 1);
+        const newClosedPositions = newWins + newLosses;
+
+        // Update PnL values
+        const oldTotalPnl = parseFloat(prev.totalPnl || "0");
+        const newTotalPnl = oldTotalPnl + pnl;
+
+        const oldUnrealizedPnl = parseFloat(prev.unrealizedPnl || "0");
+        // Assume the pnl was previously unrealized, now it's realized
+        const newUnrealizedPnl = Math.max(0, oldUnrealizedPnl - Math.abs(pnl));
+
+        const oldRealizedPnl = oldTotalPnl - oldUnrealizedPnl;
+        const newRealizedPnl = oldRealizedPnl + pnl;
+
+        // Calculate ROI
+        const totalInvested = parseFloat(prev.totalInvested || "1");
+        const newRoi = (newTotalPnl / totalInvested) * 100;
+
+        // Calculate win rate
+        const newWinRate =
+          newClosedPositions > 0
+            ? ((newWins / newClosedPositions) * 100).toFixed(2)
+            : "0.00";
+
+        // Track best and worst trades
+        const oldBestTrade = parseFloat(prev.largestWin || "0");
+        const oldWorstTrade = parseFloat(prev.largestLoss || "0");
+        const newBestTrade = Math.max(oldBestTrade, Math.max(0, pnl));
+        const newWorstTrade = Math.min(oldWorstTrade, Math.min(0, pnl));
+
+        // Calculate average win/loss (rough estimate based on cumulative)
+        const newAvgWin =
+          newWins > 0 ? (newRealizedPnl > 0 ? newRealizedPnl / newWins : 0) : 0;
+        const newAvgLoss =
+          newLosses > 0
+            ? newRealizedPnl < 0
+              ? Math.abs(newRealizedPnl) / newLosses
+              : 0
+            : 0;
+
+        // Calculate profit factor
+        const newProfitFactor =
+          newAvgLoss !== 0 ? Math.abs(newAvgWin / newAvgLoss) : 0;
+
+        // Update open positions
+        const newOpenPositions = Math.max(0, prev.openPositions - 1);
+
+        return {
+          ...prev,
+          totalPnl: newTotalPnl.toString(),
+          roi: newRoi.toFixed(2),
+          wins: newWins,
+          losses: newLosses,
+          winRate: newWinRate,
+          unrealizedPnl: newUnrealizedPnl.toFixed(4),
+          largestWin: newBestTrade.toFixed(4),
+          largestLoss: newWorstTrade.toFixed(4),
+          avgWin: newAvgWin.toFixed(4),
+          avgLoss: newAvgLoss.toFixed(4),
+          openPositions: newOpenPositions,
+        };
+      });
+    });
+
+    return () => {
+      unsubOpened();
+      unsubResolved();
+    };
+  }, []);
+
+  return { performance, loading, error };
+}
+
+/**
+ * Hook to calculate unrealized PnL from open trades and live market prices.
+ *
+ * - Looks at all OPEN trades from the trades hook
+ * - Uses live market prices from liveMarkets to calculate current value
+ * - Recalculates every time trades or prices update
+ * - Returns the sum of all unrealized PnLs across open positions
+ */
+export function useUnrealizedPnL(
+  trades: SimulatedTrade[],
+  liveMarkets: LiveMarketInfo[],
+): number {
+  return useMemo(() => {
+    // Filter for open trades only
+    const openTrades = trades.filter((t) => t.status === "OPEN");
+    if (openTrades.length === 0) return 0;
+
+    // Build a tokenId → current price map from live markets
+    const priceMap: Record<string, number> = {};
+    for (const market of liveMarkets) {
+      for (const [tokenId, priceData] of Object.entries(market.prices)) {
+        priceMap[tokenId] = priceData.mid;
+      }
+    }
+
+    // Calculate unrealized PnL for each open trade
+    let totalUnrealized = 0;
+    for (const trade of openTrades) {
+      if (!trade.tokenId || !priceMap[trade.tokenId]) continue;
+
+      const entryPrice = parseFloat(trade.entryPrice || "0");
+      const currentPrice = priceMap[trade.tokenId];
+      const shares = parseFloat(trade.entryShares || "0");
+
+      // For YES tokens (long): profit if price up
+      // For NO tokens (short): profit if price down
+      // PnL = (currentPrice - entryPrice) * shares
+      const tradePnL = (currentPrice - entryPrice) * shares;
+      totalUnrealized += tradePnL;
+    }
+
+    return totalUnrealized;
+  }, [trades, liveMarkets]);
+}
+
+/**
+ * Hook to animate a number from old value to new value.
+ *
+ * - Smoothly interpolates from prev value to new value over duration
+ * - Uses requestAnimationFrame for smooth 60fps animation
+ * - Useful for animated counters, percentages, etc.
+ */
+export function useAnimatedNumber(
+  targetValue: number,
+  duration: number = 300,
+): number {
+  const [displayValue, setDisplayValue] = useState(targetValue);
+  const animationRef = useRef<{
+    startValue: number;
+    startTime: number;
+    endValue: number;
+  } | null>(null);
+  const rafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    // If this is the first mount, set display value immediately
+    if (displayValue === targetValue) {
+      return;
+    }
+
+    // Start animation
+    animationRef.current = {
+      startValue: displayValue,
+      startTime: Date.now(),
+      endValue: targetValue,
+    };
+
+    const animate = () => {
+      if (!animationRef.current) return;
+
+      const elapsed = Date.now() - animationRef.current.startTime;
+      const progress = Math.min(elapsed / duration, 1);
+
+      // Easing: ease-out for natural deceleration
+      const easeProgress = 1 - Math.pow(1 - progress, 3);
+
+      const current =
+        animationRef.current.startValue +
+        (animationRef.current.endValue - animationRef.current.startValue) *
+          easeProgress;
+
+      setDisplayValue(current);
+
+      if (progress < 1) {
+        rafRef.current = requestAnimationFrame(animate);
+      } else {
+        // Set exact value at end to avoid floating point errors
+        setDisplayValue(animationRef.current.endValue);
+        animationRef.current = null;
+      }
+    };
+
+    rafRef.current = requestAnimationFrame(animate);
+
+    return () => {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+      }
+    };
+  }, [targetValue, duration, displayValue]);
+
+  return displayValue;
+}
+
+/**
  * Hook to fetch audit logs.
  */
 export function useAuditLogs(limit?: number) {
@@ -380,8 +646,10 @@ function auditLogToActivity(log: AuditLog): ActivityEntry {
   if (cat.includes("TRADE_RESOLVED") || cat.includes("TRADE_SETTLED"))
     kind = "TRADE_WIN"; // will be refined below by level
   else if (cat.includes("TRADE_OPENED")) kind = "TRADE_OPENED";
-  else if (cat.includes("TRADE_FORCE") || cat.includes("LOSS")) kind = "TRADE_LOSS";
-  else if (cat.includes("SKIP") || cat.includes("MOMENTUM")) kind = "MOMENTUM_SKIP";
+  else if (cat.includes("TRADE_FORCE") || cat.includes("LOSS"))
+    kind = "TRADE_LOSS";
+  else if (cat.includes("SKIP") || cat.includes("MOMENTUM"))
+    kind = "MOMENTUM_SKIP";
   else if (cat.includes("MARKET")) kind = "MARKET_RESOLVED";
   else if (log.level === "warn") kind = "WARN";
   else if (log.level === "error") kind = "ERROR";
@@ -435,11 +703,15 @@ export function useActivityLog() {
         entries.forEach((e) => seenIds.current.add(e.id));
         setActivities(entries);
       })
-      .catch(() => {/* silently skip if backend not ready */})
+      .catch(() => {
+        /* silently skip if backend not ready */
+      })
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Real-time: tradeOpened
@@ -455,8 +727,12 @@ export function useActivityLog() {
       seenIds.current.add(id);
 
       const outcome = trade.outcomeLabel ?? "??";
-      const price = trade.entryPrice ? `@${(parseFloat(trade.entryPrice) * 100).toFixed(1)}¢` : "";
-      const btc = trade.btcPriceAtEntry ? ` BTC $${parseFloat(trade.btcPriceAtEntry).toLocaleString("en-US", { maximumFractionDigits: 0 })}` : "";
+      const price = trade.entryPrice
+        ? `@${(parseFloat(trade.entryPrice) * 100).toFixed(1)}¢`
+        : "";
+      const btc = trade.btcPriceAtEntry
+        ? ` BTC $${parseFloat(trade.btcPriceAtEntry).toLocaleString("en-US", { maximumFractionDigits: 0 })}`
+        : "";
       const momentum = (trade as any).momentum;
       const momStr = momentum ? ` mom:${momentum.direction}` : "";
 
@@ -477,7 +753,7 @@ export function useActivityLog() {
       const d = msg.data as any;
       const trade = d?.trade as SimulatedTrade | undefined;
       const isWin = d?.isWin as boolean | undefined;
-      const pnl = typeof d?.pnl === "number" ? d.pnl as number : undefined;
+      const pnl = typeof d?.pnl === "number" ? (d.pnl as number) : undefined;
 
       const id = `resolved-${trade?.id ?? Date.now()}`;
       if (seenIds.current.has(id)) return;
@@ -485,9 +761,10 @@ export function useActivityLog() {
 
       const kind: ActivityEntry["kind"] = isWin ? "TRADE_WIN" : "TRADE_LOSS";
       const outcome = trade?.outcomeLabel ?? "??";
-      const pnlStr = pnl !== undefined
-        ? ` PnL: ${pnl >= 0 ? "+" : ""}$${Math.abs(pnl).toFixed(4)}`
-        : "";
+      const pnlStr =
+        pnl !== undefined
+          ? ` PnL: ${pnl >= 0 ? "+" : ""}$${Math.abs(pnl).toFixed(4)}`
+          : "";
 
       const entry: ActivityEntry = {
         id,
@@ -510,4 +787,3 @@ export function useActivityLog() {
 
   return { activities, loading };
 }
-
