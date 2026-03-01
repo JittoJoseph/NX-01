@@ -42,6 +42,10 @@ export interface SimulatedTrade {
   updatedAt: string;
   /** Market end date (ISO string) joined from markets table — used for WINDOW column display */
   marketEndDate: string | null;
+  /** Market slug joined from markets table — used to build Polymarket event URL */
+  marketSlug: string | null;
+  /** Market question joined from markets table */
+  marketQuestion: string | null;
   /** Lowest bestBid observed while position was open (before window close) */
   minPriceDuringPosition: string | null;
 }

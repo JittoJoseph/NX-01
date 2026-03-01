@@ -267,6 +267,8 @@ export class ApiServer {
           .select({
             trade: schema.simulatedTrades,
             marketEndDate: schema.markets.endDate,
+            marketSlug: schema.markets.slug,
+            marketQuestion: schema.markets.question,
           })
           .from(schema.simulatedTrades)
           .leftJoin(
@@ -286,6 +288,8 @@ export class ApiServer {
           rows.map((r) => ({
             ...r.trade,
             marketEndDate: r.marketEndDate ?? null,
+            marketSlug: r.marketSlug ?? null,
+            marketQuestion: r.marketQuestion ?? null,
           })),
         );
       } catch (error) {

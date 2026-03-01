@@ -2,22 +2,15 @@
 
 import type { SimulatedTrade } from "@/lib/types";
 import { MARKET_WINDOW_LABELS, type MarketWindow } from "@/lib/types";
-import { formatPnl } from "@/lib/utils";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { formatPnl, pnlColor } from "@/lib/utils";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { ExternalLink, X } from "lucide-react";
 
 interface TradeDetailPopupProps {
   trade: SimulatedTrade | null;
   open: boolean;
   onClose: () => void;
-  /** Polymarket event slug for deep-linking (optional) */
   marketSlug?: string | null;
-  /** Full market question shown in modal header */
   marketQuestion?: string | null;
 }
 
@@ -30,7 +23,7 @@ export function TradeDetailPopup({
 }: TradeDetailPopupProps) {
   if (!trade) return null;
 
-  const isClosed = trade.status === "CLOSED";
+  const isClosed = trade.status === "SETTLED";
   const entryPrice = parseFloat(trade.entryPrice);
   const entryFees = parseFloat(trade.entryFees || "0");
   const pnl = parseFloat(trade.realizedPnl || "0");
@@ -44,261 +37,304 @@ export function TradeDetailPopup({
   const btcDist = trade.btcDistanceUsd
     ? parseFloat(trade.btcDistanceUsd)
     : null;
+  const minPrice = trade.minPriceDuringPosition
+    ? parseFloat(trade.minPriceDuringPosition)
+    : null;
+  const shares = parseFloat(trade.entryShares);
+  const budget = parseFloat(trade.positionBudget);
+  const actualCost = parseFloat(trade.actualCost);
+
   const windowLabel = trade.windowType
     ? (MARKET_WINDOW_LABELS[trade.windowType as MarketWindow] ??
       trade.windowType)
-    : "—";
+    : null;
+
+  const outcome = trade.exitOutcome;
+  const isWin = outcome === "WIN";
+
+  const polyUrl =
+    (marketSlug ?? trade.marketSlug)
+      ? `https://polymarket.com/event/${marketSlug ?? trade.marketSlug}`
+      : `https://polymarket.com/market/${trade.marketId}`;
+
+  const resolvedQuestion = marketQuestion ?? trade.marketQuestion;
+
+  const returnPct = actualCost > 0 ? (pnl / actualCost) * 100 : 0;
+
+  const fmtBtc = (n: number) =>
+    `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  /* ─── Badge colour helpers ─── */
+  // exitOutcome is "WIN" or "LOSS" (STOP_LOSS is logged in audit, not stored in trade)
+  const statusBadgeCls = !isClosed
+    ? "text-blue-400 border-blue-400/25 bg-blue-400/5"
+    : isWin
+      ? "text-emerald-400 border-emerald-500/25 bg-emerald-500/5"
+      : "text-red-400 border-red-500/25 bg-red-500/5";
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="max-w-lg font-mono bg-background border-border flex flex-col max-h-[90vh] gap-0 p-0">
-        {/* Sticky header with title, market question, and close button */}
-        <div className="flex items-start justify-between gap-3 px-5 pt-5 pb-3 border-b border-border/30 shrink-0">
-          <div className="flex flex-col gap-1 min-w-0">
-            <DialogHeader>
-              <DialogTitle className="text-sm font-bold tracking-wider">
-                TRADE DETAIL
-              </DialogTitle>
-            </DialogHeader>
-            {marketQuestion && (
-              <p className="text-[11px] font-mono text-muted-foreground/80 leading-snug">
-                {marketQuestion}
-              </p>
-            )}
+      {/*
+        w-[calc(100%-2rem)]  → full-width minus 1rem each side on mobile
+        sm:max-w-[520px]     → cap at 520px on larger screens
+        The base DialogContent has p-6; we reset it to p-0 and control padding manually.
+      */}
+      <DialogContent className="w-[calc(100%-2rem)] sm:w-full sm:max-w-[520px] font-mono bg-background border-border/30 flex flex-col max-h-[90dvh] gap-0 p-0 overflow-hidden rounded-xl">
+        {/* ── HEADER ── */}
+        <div className="shrink-0 px-4 pt-4 pb-3 border-b border-border/20">
+          {/* Row 1: chips + actions */}
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {/* Status / outcome badge */}
+              <span
+                className={`inline-flex items-center text-[10px] font-semibold tracking-[0.15em] px-2 py-0.5 rounded border ${statusBadgeCls}`}
+              >
+                {isClosed ? (outcome ?? "SETTLED") : "OPEN"}
+              </span>
+              {windowLabel && <Chip>{windowLabel}</Chip>}
+              {trade.marketCategory && (
+                <Chip>{trade.marketCategory.toUpperCase()}</Chip>
+              )}
+              {trade.outcomeLabel && <Chip>{trade.outcomeLabel}</Chip>}
+            </div>
+
+            {/* Actions */}
+            <div className="flex items-center gap-0.5 shrink-0 -mr-1 -mt-0.5">
+              {trade.marketId && (
+                <a
+                  href={polyUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1 px-2 py-1.5 rounded text-[10px] font-mono text-muted-foreground/35 hover:text-blue-400 hover:bg-blue-500/5 transition-colors"
+                  aria-label="Open on Polymarket"
+                >
+                  polymarket <ExternalLink size={10} strokeWidth={1.75} />
+                </a>
+              )}
+              <button
+                onClick={onClose}
+                className="p-1.5 rounded text-muted-foreground/30 hover:text-foreground hover:bg-muted/40 transition-colors"
+                aria-label="Close"
+              >
+                <X size={15} strokeWidth={1.75} />
+              </button>
+            </div>
           </div>
-          <button
-            onClick={onClose}
-            className="shrink-0 mt-0.5 p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
-            aria-label="Close"
-          >
-            <X size={14} />
-          </button>
+
+          {/* Row 2: Market question */}
+          {resolvedQuestion ? (
+            <DialogTitle className="mt-2 text-[12px] font-sans font-normal text-foreground/65 leading-relaxed tracking-[0.01em]">
+              {resolvedQuestion}
+            </DialogTitle>
+          ) : (
+            /* DialogTitle must always be rendered for a11y */
+            <DialogTitle className="sr-only">Trade Detail</DialogTitle>
+          )}
         </div>
 
-        {/* Scrollable body */}
-        <div className="overflow-y-auto flex-1 px-5 py-4">
-          <div className="space-y-4 text-xs">
-            {/* Market info */}
-            <Section title="MARKET">
-              <Row label="Window Type" value={windowLabel} />
-              <Row label="Outcome" value={trade.outcomeLabel || "—"} />
-              <Row label="Order Type" value={trade.orderType || "—"} />
-              <Row
-                label="Polymarket"
+        {/* ── PnL HERO — closed trades only ── */}
+        {isClosed && (
+          <div
+            className={`shrink-0 flex items-center justify-between gap-4 px-4 py-2.5 border-b border-border/20 ${pnl >= 0 ? "bg-emerald-500/[0.035]" : "bg-red-500/[0.035]"}`}
+          >
+            <div className="flex items-baseline gap-2">
+              <Label>P&L</Label>
+              <span
+                className={`text-[15px] font-bold tabular-nums tracking-tight leading-none ${pnlColor(pnl)}`}
+              >
+                {formatPnl(pnl)}
+              </span>
+            </div>
+            <div className="flex items-baseline gap-2">
+              <Label>RETURN</Label>
+              <span
+                className={`text-[14px] font-bold tabular-nums leading-none ${pnlColor(pnl)}`}
+              >
+                {returnPct >= 0 ? "+" : ""}
+                {returnPct.toFixed(2)}%
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* ── SCROLLABLE BODY ── */}
+        <div className="overflow-y-auto flex-1 overscroll-contain">
+          {/* ── EXECUTION ── */}
+          <Section title="EXECUTION">
+            <Row2>
+              <Cell
+                label="ENTRY PRICE"
+                value={`${(entryPrice * 100).toFixed(3)}¢`}
+              />
+              <Cell
+                label="EXIT PRICE"
                 value={
-                  trade.marketId ? (
-                    <a
-                      href={
-                        marketSlug
-                          ? `https://polymarket.com/event/${marketSlug}`
-                          : `https://polymarket.com/market/${trade.marketId}`
-                      }
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-blue-400 hover:text-blue-300 flex items-center gap-1 transition-colors"
-                    >
-                      Open on Polymarket <ExternalLink size={10} />
-                    </a>
-                  ) : (
-                    "—"
-                  )
+                  exitPrice !== null ? `${(exitPrice * 100).toFixed(3)}¢` : "—"
                 }
               />
-            </Section>
-
-            {/* Pricing */}
-            <Section title="PRICING">
-              <Row label="Entry Price" value={`$${entryPrice.toFixed(6)}`} />
-              <Row
-                label="Shares"
-                value={parseFloat(trade.entryShares).toFixed(4)}
-              />
-              <Row
-                label="Position Budget"
-                value={`$${parseFloat(trade.positionBudget).toFixed(4)}`}
-              />
-              <Row
-                label="Actual Cost"
-                value={`$${parseFloat(trade.actualCost).toFixed(4)}`}
-              />
-              <Row label="Entry Fees" value={`$${entryFees.toFixed(6)}`} />
-              {trade.minPriceDuringPosition && (
-                <Row
-                  label="Min Price (window)"
-                  value={
-                    <span className="text-amber-400">
-                      {Math.round(
-                        parseFloat(trade.minPriceDuringPosition) * 100,
-                      )}
-                      ¢
-                      <span className="text-muted-foreground/50 ml-1 text-[10px]">
-                        (Δ
-                        {Math.round(
-                          (entryPrice -
-                            parseFloat(trade.minPriceDuringPosition)) *
-                            100,
-                        )}
-                        ¢ from entry)
-                      </span>
-                    </span>
-                  }
-                />
-              )}
-            </Section>
-
-            {/* Momentum Context */}
-            {(trade.momentumDirection || trade.momentumChangeUsd) && (
-              <Section title="MOMENTUM AT ENTRY">
-                {trade.momentumDirection && (
-                  <Row
-                    label="Direction"
-                    value={
-                      <span
-                        className={
-                          trade.momentumDirection === "UP"
-                            ? "text-emerald-500"
-                            : trade.momentumDirection === "DOWN"
-                              ? "text-red-500"
-                              : "text-muted-foreground"
-                        }
-                      >
-                        {trade.momentumDirection}
-                      </span>
-                    }
-                  />
-                )}
-                {trade.momentumChangeUsd && (
-                  <Row
-                    label="BTC Change"
-                    value={`$${parseFloat(trade.momentumChangeUsd).toFixed(2)}`}
-                  />
-                )}
-              </Section>
-            )}
-
-            {/* BTC Context */}
-            <Section title="BTC CONTEXT">
-              <Row
-                label="BTC at Entry"
-                value={
-                  btcAtEntry
-                    ? `$${btcAtEntry.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                    : "—"
-                }
-              />
-              {btcTarget !== null && btcTarget > 0 && (
-                <Row
-                  label="BTC Target"
-                  value={`$${btcTarget.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-                />
-              )}
-              {btcDist !== null && btcDist > 0 && (
-                <Row label="BTC Distance" value={`$${btcDist.toFixed(2)}`} />
-              )}
-            </Section>
-
-            {/* Result info */}
-            <Section title="RESULT">
-              <Row
-                label="Status"
+              <Cell label="SHARES" value={shares.toFixed(4)} />
+              <Cell
+                label="SIDE"
                 value={
                   <span
                     className={
-                      isClosed
-                        ? pnl >= 0
-                          ? "text-emerald-500"
-                          : "text-red-500"
-                        : "text-blue-500"
+                      trade.side === "BUY"
+                        ? "text-emerald-400"
+                        : trade.side === "SELL"
+                          ? "text-red-400"
+                          : "text-foreground/70"
                     }
                   >
-                    {isClosed ? "CLOSED" : "OPEN"}
+                    {trade.side}
                   </span>
                 }
               />
-              {trade.exitOutcome && (
-                <Row
-                  label="Outcome"
-                  value={
-                    <span
-                      className={
-                        trade.exitOutcome === "WIN"
-                          ? "text-emerald-500"
-                          : trade.exitOutcome === "STOP_LOSS"
-                            ? "text-amber-500"
-                            : "text-red-500"
-                      }
-                    >
-                      {trade.exitOutcome}
-                    </span>
-                  }
-                />
-              )}
-              {exitPrice !== null && (
-                <Row label="Exit Price" value={`$${exitPrice.toFixed(6)}`} />
-              )}
-              {isClosed && (
-                <Row
-                  label="Realized PnL"
-                  value={
-                    <span
-                      className={
-                        pnl > 0
-                          ? "text-emerald-500"
-                          : pnl < 0
-                            ? "text-red-500"
-                            : "text-muted-foreground"
-                      }
-                    >
-                      {formatPnl(pnl)}
-                    </span>
-                  }
-                />
-              )}
-            </Section>
-
-            {/* Execution */}
-            <Section title="EXECUTION">
-              <Row
-                label="Fill Status"
+              <Cell label="BUDGET" value={`$${budget.toFixed(4)}`} />
+              <Cell label="ACTUAL COST" value={`$${actualCost.toFixed(4)}`} />
+              <Cell label="ENTRY FEES" value={`$${entryFees.toFixed(6)}`} />
+              <Cell label="ORDER TYPE" value={trade.orderType || "—"} />
+              <Cell
+                label="FILL STATUS"
                 value={
                   <span
                     className={
                       trade.fillStatus === "FULL"
-                        ? "text-emerald-500"
+                        ? "text-emerald-400"
                         : trade.fillStatus === "PARTIAL"
-                          ? "text-amber-500"
-                          : "text-red-500"
+                          ? "text-amber-400"
+                          : "text-muted-foreground/60"
                     }
                   >
-                    {trade.fillStatus || "—"}
+                    {trade.fillStatus ?? "—"}
                   </span>
                 }
               />
-            </Section>
+              {/* Min price spans full width when present */}
+              {minPrice !== null && (
+                <div className="col-span-2 flex items-center justify-between py-2 px-4 border-t border-border/10 bg-amber-500/[0.03]">
+                  <span className="text-[10px] tracking-[0.18em] text-muted-foreground/45">
+                    MIN PRICE DURING WINDOW
+                  </span>
+                  <span className="text-[13px] tabular-nums text-amber-400">
+                    {(minPrice * 100).toFixed(3)}¢
+                    <span className="text-muted-foreground/35 ml-2 text-[11px]">
+                      −{((entryPrice - minPrice) * 100).toFixed(3)}¢ draw
+                    </span>
+                  </span>
+                </div>
+              )}
+            </Row2>
+          </Section>
 
-            {/* Timestamps */}
-            <Section title="TIMESTAMPS">
-              <Row
-                label="Opened"
-                value={new Date(trade.entryTs).toLocaleString()}
+          {/* ── BTC CONTEXT ── */}
+          {(btcAtEntry !== null ||
+            (btcTarget !== null && btcTarget > 0) ||
+            (btcDist !== null && btcDist > 0) ||
+            trade.momentumDirection) && (
+            <Section title="BTC CONTEXT">
+              <Row2>
+                {btcAtEntry !== null && (
+                  <Cell label="AT ENTRY" value={fmtBtc(btcAtEntry)} />
+                )}
+                {btcTarget !== null && btcTarget > 0 && (
+                  <Cell label="TARGET" value={fmtBtc(btcTarget)} />
+                )}
+                {btcDist !== null && btcDist > 0 && (
+                  <Cell label="DISTANCE" value={`$${btcDist.toFixed(2)}`} />
+                )}
+                {trade.momentumDirection && (
+                  <Cell
+                    label="MOMENTUM"
+                    value={
+                      <span
+                        className={
+                          trade.momentumDirection === "UP"
+                            ? "text-emerald-400"
+                            : trade.momentumDirection === "DOWN"
+                              ? "text-red-400"
+                              : "text-foreground/60"
+                        }
+                      >
+                        {trade.momentumDirection}
+                        {trade.momentumChangeUsd && (
+                          <span className="text-muted-foreground/40 ml-2 font-mono">
+                            $
+                            {Math.abs(
+                              parseFloat(trade.momentumChangeUsd),
+                            ).toFixed(0)}
+                          </span>
+                        )}
+                      </span>
+                    }
+                  />
+                )}
+              </Row2>
+            </Section>
+          )}
+
+          {/* ── RESULT (only if settled) ── */}
+          {isClosed && outcome && (
+            <div className="flex items-center gap-2 px-4 py-2 border-b border-border/15">
+              <span className="text-[10px] font-mono tracking-[0.2em] text-muted-foreground/35 uppercase">
+                RESULT
+              </span>
+              <span className="text-muted-foreground/20">/</span>
+              <span className="text-zinc-400 text-[11px] font-mono tracking-wider">
+                SETTLED
+              </span>
+              <span className="text-muted-foreground/20">·</span>
+              <span
+                className={`text-[11px] font-mono font-semibold tracking-wider ${isWin ? "text-emerald-400" : "text-red-400"}`}
+              >
+                {outcome}
+              </span>
+            </div>
+          )}
+
+          {/* ── TIMESTAMPS ── */}
+          <Section title="TIMESTAMPS">
+            <Row2>
+              <Cell label="OPENED" value={formatTs(trade.entryTs)} />
+              <Cell
+                label="CLOSED"
+                value={trade.exitTs ? formatTs(trade.exitTs) : "—"}
               />
-              {trade.exitTs && (
-                <Row
-                  label="Closed"
-                  value={new Date(trade.exitTs).toLocaleString()}
+              {trade.marketEndDate && (
+                <Cell
+                  label="MARKET ENDS"
+                  value={formatTs(trade.marketEndDate)}
                 />
               )}
               {trade.exitTs && (
-                <Row
-                  label="Duration"
+                <Cell
+                  label="HOLD DURATION"
                   value={formatDuration(trade.entryTs, trade.exitTs)}
                 />
               )}
-            </Section>
-          </div>
+            </Row2>
+          </Section>
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/* ─────────────── Primitives ─────────────── */
+
+function Chip({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="inline-flex items-center text-[10px] font-mono font-medium tracking-wider text-muted-foreground/50 border border-border/25 rounded px-1.5 py-0.5">
+      {children}
+    </span>
+  );
+}
+
+/** Micro-label used in the PnL hero */
+function Label({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="block text-[10px] font-mono tracking-[0.2em] text-muted-foreground/40 uppercase">
+      {children}
+    </span>
   );
 }
 
@@ -310,32 +346,50 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <div>
-      <div className="text-[10px] text-muted-foreground tracking-widest border-b border-border/30 pb-1 mb-2">
-        {title}
+    <div className="border-b border-border/15 last:border-b-0">
+      <div className="px-4 pt-3 pb-1">
+        <span className="text-[10px] font-mono font-medium tracking-[0.25em] text-muted-foreground/40 uppercase">
+          {title}
+        </span>
       </div>
-      <div className="space-y-1">{children}</div>
+      {children}
     </div>
   );
 }
 
-function Row({
-  label,
-  value,
-  wide,
-}: {
-  label: string;
-  value: React.ReactNode;
-  wide?: boolean;
-}) {
+/** 2-column grid wrapper for Cell items */
+function Row2({ children }: { children: React.ReactNode }) {
   return (
-    <div
-      className={`flex ${wide ? "flex-col gap-0.5" : "justify-between items-center"}`}
-    >
-      <span className="text-muted-foreground">{label}</span>
-      <span className="text-foreground">{value}</span>
+    <div className="grid grid-cols-2 divide-x divide-y divide-border/[0.08]">
+      {children}
     </div>
   );
+}
+
+function Cell({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="px-4 py-2 flex flex-col gap-0.5">
+      <span className="text-[10px] font-mono tracking-[0.18em] text-muted-foreground/40 uppercase">
+        {label}
+      </span>
+      <span className="text-[12px] font-mono tabular-nums text-foreground/80 leading-tight">
+        {value}
+      </span>
+    </div>
+  );
+}
+
+/* ─────────────── Formatters ─────────────── */
+
+function formatTs(iso: string): string {
+  return new Date(iso).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
 }
 
 function formatDuration(start: string, end: string): string {
