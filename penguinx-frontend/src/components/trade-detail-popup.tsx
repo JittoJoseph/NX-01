@@ -80,16 +80,8 @@ export function TradeDetailPopup({
             {/* Market info */}
             <Section title="MARKET">
               <Row label="Window Type" value={windowLabel} />
-              <Row
-                label="Market ID"
-                value={trade.marketId ? trade.marketId : "—"}
-              />
               <Row label="Outcome" value={trade.outcomeLabel || "—"} />
               <Row label="Order Type" value={trade.orderType || "—"} />
-              <Row
-                label="Token ID"
-                value={trade.tokenId ? trade.tokenId.slice(0, 24) + "…" : "—"}
-              />
               <Row
                 label="Polymarket"
                 value={
@@ -111,9 +103,6 @@ export function TradeDetailPopup({
                   )
                 }
               />
-              {trade.experimentId && (
-                <Row label="Experiment" value={trade.experimentId} />
-              )}
             </Section>
 
             {/* Pricing */}
@@ -124,14 +113,45 @@ export function TradeDetailPopup({
                 value={parseFloat(trade.entryShares).toFixed(4)}
               />
               <Row
-                label="USD Amount"
-                value={`$${parseFloat(trade.simulatedUsdAmount).toFixed(4)}`}
+                label="Position Budget"
+                value={`$${parseFloat(trade.positionBudget).toFixed(4)}`}
+              />
+              <Row
+                label="Actual Cost"
+                value={`$${parseFloat(trade.actualCost).toFixed(4)}`}
               />
               <Row label="Entry Fees" value={`$${entryFees.toFixed(6)}`} />
-              {trade.feeRateBps != null && (
-                <Row label="Fee Rate" value={`${trade.feeRateBps} bps`} />
-              )}
             </Section>
+
+            {/* Momentum Context */}
+            {(trade.momentumDirection || trade.momentumChangeUsd) && (
+              <Section title="MOMENTUM AT ENTRY">
+                {trade.momentumDirection && (
+                  <Row
+                    label="Direction"
+                    value={
+                      <span
+                        className={
+                          trade.momentumDirection === "UP"
+                            ? "text-emerald-500"
+                            : trade.momentumDirection === "DOWN"
+                              ? "text-red-500"
+                              : "text-muted-foreground"
+                        }
+                      >
+                        {trade.momentumDirection}
+                      </span>
+                    }
+                  />
+                )}
+                {trade.momentumChangeUsd && (
+                  <Row
+                    label="BTC Change"
+                    value={`$${parseFloat(trade.momentumChangeUsd).toFixed(2)}`}
+                  />
+                )}
+              </Section>
+            )}
 
             {/* BTC Context */}
             <Section title="BTC CONTEXT">
@@ -231,9 +251,6 @@ export function TradeDetailPopup({
                   </span>
                 }
               />
-              {trade.strategyTrigger && (
-                <Row label="Strategy Trigger" value={trade.strategyTrigger} />
-              )}
             </Section>
 
             {/* Timestamps */}

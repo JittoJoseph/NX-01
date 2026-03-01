@@ -106,8 +106,9 @@ export const ConfigSchema = z.object({
   db: z.object({
     url: z.string(),
   }),
-  simulation: z.object({
-    amountUsd: z.number().min(0.01).max(10000),
+  portfolio: z.object({
+    startingCapital: z.number().min(1).max(10_000_000),
+    slots: z.number().int().min(1).max(100),
   }),
   strategy: z.object({
     marketWindow: z.enum(MARKET_WINDOWS),
@@ -126,7 +127,7 @@ export const ConfigSchema = z.object({
     // Oracle confirmation: BTC must have moved this many USD past window-start in the trade direction
     minOracleLeadUsd: z.number().min(0).max(100_000),
   }),
-  wipe: z.object({
+  admin: z.object({
     password: z.string().min(1),
   }),
   server: z.object({
@@ -233,9 +234,6 @@ export type PriceResponse = z.infer<typeof PriceResponseSchema>;
 
 export const MidpointResponseSchema = z.object({ mid: z.string() });
 export type MidpointResponse = z.infer<typeof MidpointResponseSchema>;
-
-export const FeeRateResponseSchema = z.object({ fee_rate_bps: z.string() });
-export type FeeRateResponse = z.infer<typeof FeeRateResponseSchema>;
 
 // ============================================
 // API Response Wrapper

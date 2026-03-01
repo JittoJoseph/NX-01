@@ -7,12 +7,10 @@ import {
   GammaEventSchema,
   OrderbookSchema,
   MidpointResponseSchema,
-  FeeRateResponseSchema,
   type GammaMarket,
   type GammaEvent,
   type Orderbook,
   type MidpointResponse,
-  type FeeRateResponse,
 } from "../types/index.js";
 import { z } from "zod";
 import { logAudit } from "../db/client.js";
@@ -209,24 +207,6 @@ export class PolymarketClient {
           params: { token_id: tokenId },
         });
         return MidpointResponseSchema.parse(response.data);
-      },
-      { maxRetries: 3, retryOn: isRateLimitError },
-    );
-  }
-
-  /**
-   * Get the fee rate for a token.
-   * Per docs: GET /fee-rate?token_id={token_id}
-   * Returns fee_rate_bps as string. For crypto 5M/15M markets this is non-zero.
-   */
-  async getFeeRate(tokenId: string): Promise<number> {
-    return withRetry(
-      async () => {
-        const response = await this.clobApi.get("/fee-rate", {
-          params: { token_id: tokenId },
-        });
-        const parsed = FeeRateResponseSchema.parse(response.data);
-        return parseInt(parsed.fee_rate_bps, 10) || 0;
       },
       { maxRetries: 3, retryOn: isRateLimitError },
     );

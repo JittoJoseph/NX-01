@@ -8,6 +8,8 @@ import type {
   LiveMarketInfo,
   DiscoveredMarket,
   PerformanceMetrics,
+  PortfolioState,
+  MonteCarloResult,
   AuditLog,
   HealthResponse,
   WsMessage,
@@ -110,6 +112,41 @@ export class ApiClient {
 
     const qs = searchParams.toString();
     return fetchWithRetry(`${this.baseUrl}/api/audit${qs ? `?${qs}` : ""}`);
+  }
+
+  async getPortfolio(): Promise<PortfolioState> {
+    return fetchWithRetry(`${this.baseUrl}/api/portfolio`);
+  }
+
+  async pauseSystem(
+    password: string,
+  ): Promise<{ success: boolean; paused: boolean }> {
+    return fetchWithRetry(`${this.baseUrl}/api/admin/pause`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${password}` },
+    });
+  }
+
+  async resumeSystem(
+    password: string,
+  ): Promise<{ success: boolean; paused: boolean }> {
+    return fetchWithRetry(`${this.baseUrl}/api/admin/resume`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${password}` },
+    });
+  }
+
+  async getAnalysis(params?: {
+    simulations?: number;
+    tradesPerSim?: number;
+  }): Promise<MonteCarloResult> {
+    const searchParams = new URLSearchParams();
+    if (params?.simulations)
+      searchParams.set("simulations", String(params.simulations));
+    if (params?.tradesPerSim)
+      searchParams.set("tradesPerSim", String(params.tradesPerSim));
+    const qs = searchParams.toString();
+    return fetchWithRetry(`${this.baseUrl}/api/analysis${qs ? `?${qs}` : ""}`);
   }
 }
 

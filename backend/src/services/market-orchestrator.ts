@@ -31,6 +31,7 @@ import {
 } from "./execution-simulator.js";
 import { getBtcPriceWatcher, BtcPriceWatcher } from "./btc-price-watcher.js";
 import { getPolymarketClient, PolymarketClient } from "./polymarket-client.js";
+import { PortfolioManager } from "./portfolio-manager.js";
 
 import type {
   PriceUpdateEvent,
@@ -91,6 +92,7 @@ export class MarketOrchestrator extends EventEmitter {
   private strategyEngine: StrategyEngine;
   private btcWatcher: BtcPriceWatcher;
   private client: PolymarketClient;
+  readonly portfolioManager: PortfolioManager;
 
   private activeMarkets: Map<string, ActiveMarketState> = new Map();
   /** conditionId → marketId for O(1) lookup on WS market_resolved events */
@@ -111,6 +113,7 @@ export class MarketOrchestrator extends EventEmitter {
     this.strategyEngine = getStrategyEngine();
     this.btcWatcher = getBtcPriceWatcher();
     this.client = getPolymarketClient();
+    this.portfolioManager = new PortfolioManager();
   }
 
   async start(): Promise<void> {
@@ -120,6 +123,9 @@ export class MarketOrchestrator extends EventEmitter {
     const config = getConfig();
     const windowLabel = WINDOW_CONFIGS[config.strategy.marketWindow].label;
 
+    // Initialise portfolio (creates DB row on first run, reloads on restart)
+    await this.portfolioManager.init();
+
     logger.info(
       {
         window: config.strategy.marketWindow,
@@ -127,6 +133,8 @@ export class MarketOrchestrator extends EventEmitter {
         threshold: config.strategy.entryPriceThreshold,
         tradeWindowSec: config.strategy.tradeFromWindowSeconds,
         maxPositions: config.strategy.maxSimultaneousPositions,
+        startingCapital: config.portfolio.startingCapital,
+        portfolioSlots: config.portfolio.slots,
       },
       "Starting market orchestrator",
     );
@@ -172,9 +180,8 @@ export class MarketOrchestrator extends EventEmitter {
   }
 
   /**
-   * Pause all trading activity. Used by the wipe endpoint.
-   * Stops scanner and strategy evaluation but keeps WS alive
-   * for any open position resolution. System won't resume until restart.
+   * Pause new trade entries. Existing open positions continue to be
+   * tracked and resolved normally. Scanner stops but WS stays alive.
    */
   pause(): void {
     this.paused = true;
@@ -185,7 +192,24 @@ export class MarketOrchestrator extends EventEmitter {
       this.cleanupTimer = null;
     }
 
-    logger.warn("System paused — restart required to resume");
+    logger.warn("System paused — new positions blocked, existing tracked");
+  }
+
+  /**
+   * Resume trading after a pause. Restarts the scanner and cleanup timer.
+   */
+  async resume(): Promise<void> {
+    if (!this.paused) return;
+    this.paused = false;
+
+    // Reload portfolio state in case admin wiped + reset
+    await this.portfolioManager.reload();
+
+    // Restart scanner and cleanup
+    await this.scanner.start();
+    this.cleanupTimer = setInterval(() => this.cleanupExpiredMarkets(), 10_000);
+
+    logger.info("System resumed — trading active");
   }
 
   isPaused(): boolean {
@@ -259,6 +283,22 @@ export class MarketOrchestrator extends EventEmitter {
       });
   }
 
+  /**
+   * Estimate the total USD value of all open positions using latest bid prices.
+   * value = sum( shares × currentBid ) for each open position.
+   */
+  computeOpenPositionsValue(): number {
+    let total = 0;
+    for (const pos of this.openPositions.values()) {
+      // Look up current bid from the active market's last prices
+      const market = this.activeMarkets.get(pos.marketId);
+      const tokenPrices = market?.lastPrices[pos.tokenId];
+      const currentBid = tokenPrices?.bid ?? pos.entryPrice; // fallback to entry
+      total += pos.entryShares * currentBid;
+    }
+    return total;
+  }
+
   private wireEvents(): void {
     // Scanner → new market discovered
     this.scanner.on("newMarket", async ({ market }) => {
@@ -274,10 +314,18 @@ export class MarketOrchestrator extends EventEmitter {
 
     // WS → token price updates (price_change and best_bid_ask both call the same handler)
     this.wsWatcher.on("priceUpdate", (ev: PriceUpdateEvent) =>
-      this.onTokenPriceUpdate(ev.tokenId, parseFloat(ev.bestBid), parseFloat(ev.bestAsk)),
+      this.onTokenPriceUpdate(
+        ev.tokenId,
+        parseFloat(ev.bestBid),
+        parseFloat(ev.bestAsk),
+      ),
     );
     this.wsWatcher.on("bestBidAskUpdate", (ev: BestBidAskEvent) =>
-      this.onTokenPriceUpdate(ev.tokenId, parseFloat(ev.bestBid), parseFloat(ev.bestAsk)),
+      this.onTokenPriceUpdate(
+        ev.tokenId,
+        parseFloat(ev.bestBid),
+        parseFloat(ev.bestAsk),
+      ),
     );
     this.wsWatcher.on("orderbookUpdate", (_ev: OrderbookUpdateEvent) => {
       // Orderbook is fetched on-demand during trade execution, not cached
@@ -448,7 +496,11 @@ export class MarketOrchestrator extends EventEmitter {
    * Called by both price_change and best_bid_ask event types — both carry the
    * same data and require the same actions (cache price, evaluate strategy, check stop-loss).
    */
-  private onTokenPriceUpdate(tokenId: string, bestBid: number, bestAsk: number): void {
+  private onTokenPriceUpdate(
+    tokenId: string,
+    bestBid: number,
+    bestAsk: number,
+  ): void {
     // Update cached price for this token
     for (const state of this.activeMarkets.values()) {
       if (state.yesTokenId === tokenId || state.noTokenId === tokenId) {
@@ -543,6 +595,21 @@ export class MarketOrchestrator extends EventEmitter {
     const config = getConfig();
 
     try {
+      // ── Portfolio position sizing ────────────────────────────
+      // Compute budget = portfolioValue / slots, where portfolioValue includes
+      // the estimated value of all open positions at current bid prices.
+      const openPositionsValue = this.computeOpenPositionsValue();
+      const positionBudget =
+        this.portfolioManager.computePositionBudget(openPositionsValue);
+
+      if (positionBudget <= 0) {
+        logger.info(
+          { openPositionsValue, cash: this.portfolioManager.getCashBalance() },
+          "Insufficient portfolio value for new position — skipping",
+        );
+        return;
+      }
+
       // Fetch the full orderbook for this token
       const orderbookResult = await this.client.getOrderbook(opp.tokenId);
       if (!orderbookResult?.data || !orderbookResult.data.asks?.length) {
@@ -556,26 +623,13 @@ export class MarketOrchestrator extends EventEmitter {
       }
       const orderbook = orderbookResult.data;
 
-      // Calculate fee rate
-      let feeRateBps: number;
-      try {
-        feeRateBps = await this.client.getFeeRate(opp.tokenId);
-      } catch {
-        // Default to crypto market fee rate
-        feeRateBps = 25; // 0.25 * 100
-      }
-
       // Simulate the limit buy using maxEntryPrice as the GTC limit.
-      // This models placing a resting GTC limit order at our maximum
-      // acceptable price. The simulation fills against all asks at or
-      // below this price (price improvement), which is exactly how
-      // Polymarket limit orders work — you get filled at the best
-      // available price up to your limit.
+      // Uses the CRYPTO_FEE formula (no explicit fee rate needed — it's computed
+      // per-share from the fill price inside the simulator).
       const execution = simulateLimitBuy(
         orderbook,
-        config.simulation.amountUsd,
+        positionBudget,
         config.strategy.maxEntryPrice,
-        feeRateBps,
       );
 
       if (execution.totalShares <= 0) {
@@ -605,20 +659,40 @@ export class MarketOrchestrator extends EventEmitter {
         return;
       }
 
+      // ── Deduct actual cost from cash ─────────────────────────
+      const actualCost = execution.netCost;
+      const deducted = await this.portfolioManager.deductCash(actualCost);
+      if (!deducted) {
+        logger.warn(
+          { actualCost, cash: this.portfolioManager.getCashBalance() },
+          "Insufficient cash for actual fill cost — skipping",
+        );
+        return;
+      }
+
+      // ── Capture momentum context ─────────────────────────────
+      const momentum = config.strategy.momentumEnabled
+        ? this.btcWatcher.getMomentum(
+            config.strategy.momentumLookbackMs,
+            config.strategy.momentumMinChangeUsd,
+          )
+        : null;
+
       const tradeRow = await createSimulatedTrade({
         marketId: opp.marketId,
         tokenId: opp.tokenId,
         outcomeLabel: opp.outcomeLabel,
-        strategyTrigger: "end_of_window_micro_profit",
         entryTs: new Date(),
         entryPrice: execution.averagePrice.toFixed(6),
         entryShares: execution.totalShares.toFixed(6),
+        positionBudget: positionBudget.toFixed(6),
+        actualCost: actualCost.toFixed(6),
         entryFees: execution.fees.toFixed(6),
-        simulatedUsdAmount: config.simulation.amountUsd,
-        feeRateBps: execution.feeRateBps,
         btcPriceAtEntry: opp.btcPrice,
         btcTargetPrice: opp.btcTargetPrice,
         btcDistanceUsd: opp.btcDistanceUsd,
+        momentumDirection: momentum?.direction ?? undefined,
+        momentumChangeUsd: momentum ? Math.abs(momentum.changeUsd) : undefined,
         orderbookSnapshot: execution.orderbookSnapshot,
       });
       const tradeId = tradeRow!.id;
@@ -649,12 +723,14 @@ export class MarketOrchestrator extends EventEmitter {
           outcome: opp.outcomeLabel,
           avgPrice: execution.averagePrice,
           shares: execution.totalShares,
-          cost: execution.netCost,
+          positionBudget,
+          actualCost,
           expectedProfit,
           btcPrice: opp.btcPrice,
           btcTarget: opp.btcTargetPrice,
           btcDistance: opp.btcDistanceUsd,
           secondsToEnd: opp.secondsToEnd,
+          cashRemaining: this.portfolioManager.getCashBalance(),
         },
       );
 
@@ -674,11 +750,13 @@ export class MarketOrchestrator extends EventEmitter {
           outcome: opp.outcomeLabel,
           avgPrice: execution.averagePrice.toFixed(4),
           shares: execution.totalShares.toFixed(2),
-          cost: execution.netCost.toFixed(4),
+          budget: positionBudget.toFixed(2),
+          actualCost: actualCost.toFixed(4),
           fees: execution.fees.toFixed(4),
           expectedProfit: expectedProfit.toFixed(4),
           btcPrice: opp.btcPrice.toFixed(2),
           btcDistance: opp.btcDistanceUsd.toFixed(2),
+          cashRemaining: this.portfolioManager.getCashBalance().toFixed(2),
         },
         "📈 Simulated trade opened",
       );
@@ -690,7 +768,7 @@ export class MarketOrchestrator extends EventEmitter {
       logAudit(
         "error",
         "SYSTEM",
-        `Failed to execute simulated trade for market ${opp.marketId}: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to execute simulated trade for market ${opp.marketId}: ${error instanceof Error ? error.message : String(error)}`,
       ).catch(() => {});
     }
   }
@@ -751,13 +829,6 @@ export class MarketOrchestrator extends EventEmitter {
       let exitFees = 0;
 
       if (orderbookResult?.data && orderbookResult.data.bids?.length > 0) {
-        let feeRateBps: number;
-        try {
-          feeRateBps = await this.client.getFeeRate(pos.tokenId);
-        } catch {
-          feeRateBps = 25;
-        }
-
         // Simulate a FAK (Fill-And-Kill) market sell: walk the bid side accepting
         // any price (limitPrice = 0). This matches what a real Polymarket limit
         // sell at $0.00 price would do — fill all available bids then cancel remainder.
@@ -765,15 +836,19 @@ export class MarketOrchestrator extends EventEmitter {
           orderbookResult.data,
           pos.entryShares,
           0, // accept any bid — full market sell
-          feeRateBps,
         );
 
-        exitPrice = sellResult.totalSharesSold > 0 ? sellResult.averagePrice : triggerBid;
+        exitPrice =
+          sellResult.totalSharesSold > 0 ? sellResult.averagePrice : triggerBid;
         exitFees = sellResult.totalSharesSold > 0 ? sellResult.fees : 0;
 
         if (sellResult.isPartialFill) {
           logger.warn(
-            { tradeId, sold: sellResult.totalSharesSold, total: pos.entryShares },
+            {
+              tradeId,
+              sold: sellResult.totalSharesSold,
+              total: pos.entryShares,
+            },
             "Stop-loss partial fill — insufficient bid liquidity",
           );
         }
@@ -789,6 +864,12 @@ export class MarketOrchestrator extends EventEmitter {
         pos.fees,
         exitFees,
       );
+
+      // Add sell proceeds back to cash: shares sold × exitPrice - exitFees
+      const sellProceeds = pos.entryShares * exitPrice - exitFees;
+      if (sellProceeds > 0) {
+        await this.portfolioManager.addCash(sellProceeds);
+      }
 
       await resolveTrade(tradeId, "LOSS", pnl.toFixed(6), exitPrice.toFixed(6));
       this.openPositions.delete(tradeId);
@@ -946,7 +1027,11 @@ export class MarketOrchestrator extends EventEmitter {
       }
     } catch (error) {
       logger.error({ error, marketId }, "Resolution poll failed");
-      logAudit("error", "SYSTEM", `Resolution poll failed for market ${marketId}: ${error instanceof Error ? error.message : String(error)}`).catch(() => {});
+      logAudit(
+        "error",
+        "SYSTEM",
+        `Resolution poll failed for market ${marketId}: ${error instanceof Error ? error.message : String(error)}`,
+      ).catch(() => {});
     }
   }
 
@@ -967,6 +1052,12 @@ export class MarketOrchestrator extends EventEmitter {
         ? calculateWinProfit(pos.entryPrice, pos.entryShares, pos.fees)
         : calculateLossAmount(pos.entryPrice, pos.entryShares, pos.fees);
 
+      // Add cash back: win = 1 × shares (payout), loss = $0
+      if (isWin) {
+        await this.portfolioManager.addCash(pos.entryShares); // shares × $1 payout
+      }
+      // For a loss, no cash comes back
+
       const resolvedTrade = await resolveTrade(
         tradeId,
         isWin ? "WIN" : "LOSS",
@@ -984,6 +1075,7 @@ export class MarketOrchestrator extends EventEmitter {
           exitPrice,
           pnl,
           winningOutcome,
+          cashBalance: this.portfolioManager.getCashBalance(),
         },
       );
 
@@ -1268,7 +1360,6 @@ export class MarketOrchestrator extends EventEmitter {
       }),
     );
   }
-
 
   /**
    * Periodically remove expired markets that have no open positions.

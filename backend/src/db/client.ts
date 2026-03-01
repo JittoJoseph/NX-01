@@ -174,7 +174,6 @@ export async function loadOpenTradesWithMarkets() {
 // ============================================
 
 export async function createSimulatedTrade(data: {
-  experimentId?: string;
   marketId?: string;
   tokenId: string;
   marketCategory?: string;
@@ -183,14 +182,15 @@ export async function createSimulatedTrade(data: {
   entryTs: Date;
   entryPrice: string;
   entryShares: string;
-  simulatedUsdAmount?: number;
+  positionBudget: string;
+  actualCost: string;
   entryFees?: string;
-  feeRateBps?: number;
   fillStatus?: string;
   btcPriceAtEntry?: number;
   btcTargetPrice?: number;
   btcDistanceUsd?: number;
-  strategyTrigger?: string;
+  momentumDirection?: string;
+  momentumChangeUsd?: number;
   orderbookSnapshot?: unknown;
   raw?: unknown;
 }) {
@@ -198,7 +198,6 @@ export async function createSimulatedTrade(data: {
   const result = await database
     .insert(schema.simulatedTrades)
     .values({
-      experimentId: data.experimentId || null,
       marketId: data.marketId || null,
       tokenId: data.tokenId,
       marketCategory: data.marketCategory || null,
@@ -209,14 +208,15 @@ export async function createSimulatedTrade(data: {
       entryTs: data.entryTs,
       entryPrice: data.entryPrice,
       entryShares: data.entryShares,
-      simulatedUsdAmount: data.simulatedUsdAmount?.toString() ?? "1",
+      positionBudget: data.positionBudget,
+      actualCost: data.actualCost,
       entryFees: data.entryFees ?? "0",
-      feeRateBps: data.feeRateBps ?? null,
       fillStatus: data.fillStatus ?? "FULL",
       btcPriceAtEntry: data.btcPriceAtEntry?.toString() ?? null,
       btcTargetPrice: data.btcTargetPrice?.toString() ?? null,
       btcDistanceUsd: data.btcDistanceUsd?.toString() ?? null,
-      strategyTrigger: data.strategyTrigger || null,
+      momentumDirection: data.momentumDirection || null,
+      momentumChangeUsd: data.momentumChangeUsd?.toString() ?? null,
       orderbookSnapshot: data.orderbookSnapshot as any,
       raw: data.raw as any,
       status: "OPEN",
@@ -270,4 +270,71 @@ export async function logAudit(
   } catch (e) {
     logger.error({ error: e }, "Failed to write audit log");
   }
+}
+
+// ============================================
+// Portfolio helpers
+// ============================================
+
+/** Get the single portfolio row (or null if not initialised). */
+export async function getPortfolio() {
+  const database = getDb();
+  const rows = await database
+    .select()
+    .from(schema.portfolio)
+    .where(eq(schema.portfolio.id, 1))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/**
+ * Initialise the portfolio row if it doesn't exist.
+ * If it already exists, leave it alone (allows server restarts without resetting).
+ */
+export async function initPortfolio(startingCapital: number) {
+  const database = getDb();
+  const existing = await getPortfolio();
+  if (existing) return existing;
+
+  const result = await database
+    .insert(schema.portfolio)
+    .values({
+      id: 1,
+      initialCapital: startingCapital.toString(),
+      cashBalance: startingCapital.toString(),
+    })
+    .returning();
+  return result[0];
+}
+
+/** Atomically update cash balance. */
+export async function updateCashBalance(newBalance: string) {
+  const database = getDb();
+  const result = await database
+    .update(schema.portfolio)
+    .set({ cashBalance: newBalance, updatedAt: new Date() })
+    .where(eq(schema.portfolio.id, 1))
+    .returning();
+  return result[0];
+}
+
+/**
+ * Wipe all data and reset portfolio to the given starting capital.
+ * Used by the admin wipe endpoint.
+ */
+export async function wipeAndResetPortfolio(startingCapital: number) {
+  const database = getDb();
+  await database.delete(schema.simulatedTrades);
+  await database.delete(schema.auditLogs);
+  await database.delete(schema.portfolio);
+  // Re-create portfolio with fresh capital
+  const result = await database
+    .insert(schema.portfolio)
+    .values({
+      id: 1,
+      initialCapital: startingCapital.toString(),
+      cashBalance: startingCapital.toString(),
+    })
+    .returning();
+  return result[0];
 }

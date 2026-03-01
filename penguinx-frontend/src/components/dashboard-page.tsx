@@ -350,8 +350,12 @@ export function DashboardPage() {
                     value={`${stats.config.tradeFromWindowSeconds}s`}
                   />
                   <StatRow
-                    label="Sim Amount"
-                    value={`$${stats.config.simulationAmountUsd}`}
+                    label="Starting Capital"
+                    value={`$${stats.config.startingCapital}`}
+                  />
+                  <StatRow
+                    label="Portfolio Slots"
+                    value={stats.config.portfolioSlots.toString()}
                   />
                   <StatRow
                     label="Max Positions"
@@ -478,7 +482,11 @@ function TopDashboardSection({
   const netPnl = animatedNetPnl;
   const roi = parseFloat(performance?.roi || "0");
   const winRate = parseFloat(performance?.winRate || "0");
-  const totalInvested = parseFloat(performance?.totalInvested || "0");
+  const totalDeployed = parseFloat(performance?.totalDeployed || "0");
+  const cashBalance = parseFloat(performance?.cashBalance || "0");
+  const initialCapital = parseFloat(performance?.initialCapital || "0");
+  const openPositionsValue = parseFloat(performance?.openPositionsValue || "0");
+  const portfolioValue = cashBalance + openPositionsValue;
   // Use live-calculated unrealized PnL instead of API value
   const unrealizedPnl = liveUnrealizedPnL;
   const realizedPnl = netPnlBaseValue - unrealizedPnl;
@@ -579,7 +587,7 @@ function TopDashboardSection({
       {isPaused && (
         <div className="flex items-center justify-center gap-2 px-4 py-1.5 bg-red-500/10 border-b border-red-500/20">
           <span className="text-[11px] font-mono font-bold text-red-400 tracking-widest">
-            SYSTEM PAUSED — RESTART REQUIRED
+            SYSTEM PAUSED — Use Resume to restart trading
           </span>
         </div>
       )}
@@ -817,17 +825,18 @@ function TopDashboardSection({
               </div>
             </div>
 
-            {/* Col 2: Capital + Win rate */}
+            {/* Col 2: Portfolio + Win rate */}
             <div className="p-5 space-y-4">
               <div>
                 <div className="text-[10px] font-mono text-muted-foreground tracking-widest mb-0.5">
-                  CAPITAL
+                  PORTFOLIO VALUE
                 </div>
                 <div className="text-2xl font-bold font-mono tabular-nums text-foreground">
-                  ${totalInvested.toFixed(2)}
+                  ${portfolioValue.toFixed(2)}
                 </div>
                 <div className="text-[10px] font-mono text-muted-foreground/50 mt-0.5">
-                  total invested
+                  cash ${cashBalance.toFixed(2)} + positions $
+                  {openPositionsValue.toFixed(2)}
                 </div>
               </div>
 

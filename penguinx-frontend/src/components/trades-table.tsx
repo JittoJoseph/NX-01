@@ -81,7 +81,7 @@ export function TradesTable({
             const entryCents = Math.round(entryPrice * 100);
             const shares = parseFloat(trade.entryShares || "0");
             const fees = parseFloat(trade.entryFees || "0");
-            const usdAmount = parseFloat(trade.simulatedUsdAmount || "1");
+            const actualCost = parseFloat(trade.actualCost || "1");
             const isUp = trade.outcomeLabel === "Up";
             const isClosed = trade.status === "SETTLED";
             const isOpen = trade.status === "OPEN";
@@ -125,10 +125,10 @@ export function TradesTable({
 
             // P&L percentages
             const realizedPnlPct =
-              usdAmount > 0 ? (realizedPnl / usdAmount) * 100 : 0;
+              actualCost > 0 ? (realizedPnl / actualCost) * 100 : 0;
             const unrealizedPnlPct =
-              unrealizedPnl !== null && usdAmount > 0
-                ? (unrealizedPnl / usdAmount) * 100
+              unrealizedPnl !== null && actualCost > 0
+                ? (unrealizedPnl / actualCost) * 100
                 : null;
 
             // Window label
@@ -201,9 +201,11 @@ export function TradesTable({
                       >
                         {liveCents}¢
                       </span>
-                      <span className={`text-[9px] font-mono ${
-                        isPending ? "text-amber-400" : "text-blue-400"
-                      }`}>
+                      <span
+                        className={`text-[9px] font-mono ${
+                          isPending ? "text-amber-400" : "text-blue-400"
+                        }`}
+                      >
                         ● {isPending ? "SETTLING" : "LIVE"}
                       </span>
                     </div>

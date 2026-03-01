@@ -32,20 +32,21 @@ export function loadConfig(): Config {
     db: {
       url: env("SUPABASE_DATABASE_URL"),
     },
-    simulation: {
-      amountUsd: envNum("SIMULATION_AMOUNT_USD", 1),
+    portfolio: {
+      startingCapital: envNum("STARTING_CAPITAL", 100),
+      slots: envNum("PORTFOLIO_SLOTS", 5),
     },
     strategy: {
       marketWindow: env("MARKET_WINDOW", "5M"),
       tradeFromWindowSeconds: envNum("TRADE_FROM_WINDOW_SECONDS", 60),
       entryPriceThreshold: envNum("ENTRY_PRICE_THRESHOLD", 0.94),
       maxEntryPrice: envNum("MAX_ENTRY_PRICE", 0.97),
-      maxSimultaneousPositions: envNum("MAX_SIMULTANEOUS_POSITIONS", 3),
+      maxSimultaneousPositions: envNum("MAX_SIMULTANEOUS_POSITIONS", 5),
       minBtcDistanceUsd: envNum("MIN_BTC_DISTANCE_USD", 50),
       scanIntervalMs: envNum("SCAN_INTERVAL_MS", 60_000),
       // Stop-loss: sell if token bid drops below this price WHILE window is still open
       stopLossEnabled: envBool("STOP_LOSS_ENABLED", true),
-      stopLossPriceTrigger: envNum("STOP_LOSS_PRICE_TRIGGER", 0.60),
+      stopLossPriceTrigger: envNum("STOP_LOSS_PRICE_TRIGGER", 0.6),
       // Momentum filter
       momentumEnabled: envBool("MOMENTUM_ENABLED", true),
       momentumLookbackMs: envNum("MOMENTUM_LOOKBACK_MS", 90_000),
@@ -53,8 +54,8 @@ export function loadConfig(): Config {
       // Oracle confirmation: BTC must have crossed window-start by at least this many USD in trade direction
       minOracleLeadUsd: envNum("MIN_ORACLE_LEAD_USD", 50),
     },
-    wipe: {
-      password: env("WIPE_PASSWORD"),
+    admin: {
+      password: env("ADMIN_PASSWORD"),
     },
     server: {
       port: envNum("PORT", 4000),

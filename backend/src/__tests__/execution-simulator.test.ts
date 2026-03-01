@@ -1,4 +1,23 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+
+// Mock the logger module before importing execution-simulator
+vi.mock("../utils/logger.js", () => {
+  const noop = () => {};
+  const childLogger = {
+    info: noop,
+    warn: noop,
+    error: noop,
+    debug: noop,
+    fatal: noop,
+    trace: noop,
+    child: () => childLogger,
+  };
+  return {
+    createModuleLogger: () => childLogger,
+    getLogger: () => childLogger,
+  };
+});
+
 import {
   simulateLimitBuy,
   simulateLimitSell,
@@ -31,7 +50,7 @@ function makeOrderbook(
 }
 
 // ============================================
-// simulateLimitBuy
+// simulateLimitBuy — crypto fee always applied
 // ============================================
 
 describe("simulateLimitBuy", () => {
@@ -46,12 +65,11 @@ describe("simulateLimitBuy", () => {
     );
 
     // Limit at 0.95 — should fill 0.93 and 0.95, skip 0.97
-    const result = simulateLimitBuy(orderbook, 1000, 0.95, 25);
+    const result = simulateLimitBuy(orderbook, 1000, 0.95);
 
     expect(result.fillDetails.length).toBe(2);
     expect(result.fillDetails[0]!.price).toBe(0.93);
     expect(result.fillDetails[1]!.price).toBe(0.95);
-    // Should NOT include the 0.97 level
     expect(result.fillDetails.every((d) => d.price <= 0.95)).toBe(true);
     expect(result.totalShares).toBeGreaterThan(0);
   });
@@ -65,29 +83,25 @@ describe("simulateLimitBuy", () => {
       [{ price: "0.94", size: "100" }],
     );
 
-    // Limit at 0.95 — all asks are above → no fill
-    const result = simulateLimitBuy(orderbook, 1, 0.95, 25);
+    const result = simulateLimitBuy(orderbook, 1, 0.95);
 
     expect(result.totalShares).toBe(0);
     expect(result.fillDetails.length).toBe(0);
   });
 
   it("respects the USD budget", () => {
-    const orderbook = makeOrderbook(
-      [{ price: "0.50", size: "1000" }], // Cheap shares, lots of liquidity
-      [],
-    );
+    const orderbook = makeOrderbook([{ price: "0.50", size: "1000" }], []);
 
-    // Only $1 budget at $0.50/share → should buy ~2 shares
-    const result = simulateLimitBuy(orderbook, 1, 0.5, 0);
+    // $1 budget at $0.50/share — crypto fees will reduce the shares slightly
+    const result = simulateLimitBuy(orderbook, 1, 0.5);
 
-    expect(result.totalShares).toBeCloseTo(2, 1);
-    expect(result.totalCost).toBeLessThanOrEqual(1.0);
+    expect(result.totalShares).toBeGreaterThan(1.5);
+    expect(result.netCost).toBeLessThanOrEqual(1.01);
   });
 
   it("handles an empty orderbook gracefully", () => {
     const orderbook = makeOrderbook([], []);
-    const result = simulateLimitBuy(orderbook, 1, 0.95, 25);
+    const result = simulateLimitBuy(orderbook, 1, 0.95);
 
     expect(result.totalShares).toBe(0);
     expect(result.averagePrice).toBe(0);
@@ -104,51 +118,52 @@ describe("simulateLimitBuy", () => {
       [],
     );
 
-    // Limit at 0.97 — fills at 0.90, 0.93, 0.95 (price improvement)
-    const result = simulateLimitBuy(orderbook, 100, 0.97, 25);
+    const result = simulateLimitBuy(orderbook, 100, 0.97);
 
     expect(result.fillDetails.length).toBe(3);
-    // Average price should be weighted toward 0.95 (most volume there)
     expect(result.averagePrice).toBeGreaterThan(0.9);
     expect(result.averagePrice).toBeLessThan(0.97);
   });
 
-  it("applies fees correctly at extreme prices (near 0.97)", () => {
-    const orderbook = makeOrderbook([{ price: "0.97", size: "100" }], []);
-
-    // At p=0.97, fee = 0.25 × (0.97 × 0.03)^2 ≈ 0.000212
-    // With 4-decimal rounding: 0.0002
-    const result = simulateLimitBuy(orderbook, 1, 0.97, 25);
-
-    // Fee per share should be very small at extreme prices
-    expect(result.fees).toBeGreaterThanOrEqual(0);
-    expect(result.fees).toBeLessThan(0.01); // Less than 1 cent for $1 trade
-  });
-
-  it("applies zero fees when feeRateBps is 0", () => {
+  it("always applies crypto fee — fees > 0 at mid-range price", () => {
     const orderbook = makeOrderbook([{ price: "0.50", size: "100" }], []);
 
-    const result = simulateLimitBuy(orderbook, 1, 0.5, 0);
+    // At p=0.50 the fee = 0.25 × (0.5 × 0.5)^2 = 0.015625 per share
+    const result = simulateLimitBuy(orderbook, 10, 0.5);
 
-    expect(result.fees).toBe(0);
+    expect(result.fees).toBeGreaterThan(0);
+    expect(result.fees).toBeGreaterThan(0.1);
+  });
+
+  it("applies very small fees at extreme prices (near 0.97)", () => {
+    const orderbook = makeOrderbook([{ price: "0.97", size: "100" }], []);
+
+    const result = simulateLimitBuy(orderbook, 1, 0.97);
+
+    expect(result.fees).toBeGreaterThanOrEqual(0);
+    expect(result.fees).toBeLessThan(0.01);
   });
 
   it("correctly marks partial fills", () => {
-    const orderbook = makeOrderbook(
-      [{ price: "0.95", size: "0.5" }], // Only 0.5 shares available
-      [],
-    );
+    const orderbook = makeOrderbook([{ price: "0.95", size: "0.5" }], []);
 
-    // $10 budget, only $0.475 worth available → >10% unfilled
-    const result = simulateLimitBuy(orderbook, 10, 0.95, 0);
+    const result = simulateLimitBuy(orderbook, 10, 0.95);
 
     expect(result.isPartialFill).toBe(true);
     expect(result.totalShares).toBeCloseTo(0.5, 1);
   });
+
+  it("netCost equals totalCost + fees", () => {
+    const orderbook = makeOrderbook([{ price: "0.90", size: "50" }], []);
+
+    const result = simulateLimitBuy(orderbook, 10, 0.95);
+
+    expect(result.netCost).toBeCloseTo(result.totalCost + result.fees, 6);
+  });
 });
 
 // ============================================
-// simulateLimitSell
+// simulateLimitSell — crypto fee always applied
 // ============================================
 
 describe("simulateLimitSell", () => {
@@ -162,11 +177,10 @@ describe("simulateLimitSell", () => {
       ],
     );
 
-    // Sell 50 shares with limit at 0.85 → fill at 0.90 and 0.85
-    const result = simulateLimitSell(orderbook, 50, 0.85, 25);
+    const result = simulateLimitSell(orderbook, 50, 0.85);
 
     expect(result.totalSharesSold).toBe(50);
-    expect(result.fillDetails.length).toBe(1); // Only 0.90 needed (100 size > 50 shares)
+    expect(result.fillDetails.length).toBe(1);
     expect(result.fillDetails[0]!.price).toBe(0.9);
   });
 
@@ -179,8 +193,7 @@ describe("simulateLimitSell", () => {
       ],
     );
 
-    // Limit at 0.85 → all bids below → no fill
-    const result = simulateLimitSell(orderbook, 10, 0.85, 25);
+    const result = simulateLimitSell(orderbook, 10, 0.85);
 
     expect(result.totalSharesSold).toBe(0);
     expect(result.fillDetails.length).toBe(0);
@@ -196,19 +209,17 @@ describe("simulateLimitSell", () => {
       ],
     );
 
-    // Sell 25 shares at any price (stop-loss panic)
-    const result = simulateLimitSell(orderbook, 25, 0, 0);
+    const result = simulateLimitSell(orderbook, 25, 0);
 
     expect(result.totalSharesSold).toBe(25);
-    expect(result.fillDetails.length).toBe(3); // 10+10+5
-    // Average price should be weighted toward higher bids
+    expect(result.fillDetails.length).toBe(3);
     expect(result.averagePrice).toBeGreaterThan(0.1);
     expect(result.averagePrice).toBeLessThan(0.5);
   });
 
   it("handles empty bids gracefully", () => {
     const orderbook = makeOrderbook([], []);
-    const result = simulateLimitSell(orderbook, 10, 0, 0);
+    const result = simulateLimitSell(orderbook, 10, 0);
 
     expect(result.totalSharesSold).toBe(0);
     expect(result.averagePrice).toBe(0);
@@ -216,16 +227,20 @@ describe("simulateLimitSell", () => {
   });
 
   it("handles partial fills correctly", () => {
-    const orderbook = makeOrderbook(
-      [],
-      [{ price: "0.80", size: "5" }], // Only 5 shares of demand
-    );
+    const orderbook = makeOrderbook([], [{ price: "0.80", size: "5" }]);
 
-    // Try to sell 100 shares → only 5 filled
-    const result = simulateLimitSell(orderbook, 100, 0, 0);
+    const result = simulateLimitSell(orderbook, 100, 0);
 
     expect(result.totalSharesSold).toBe(5);
     expect(result.isPartialFill).toBe(true);
+  });
+
+  it("netRevenue equals grossRevenue minus fees", () => {
+    const orderbook = makeOrderbook([], [{ price: "0.80", size: "100" }]);
+
+    const result = simulateLimitSell(orderbook, 20, 0);
+
+    expect(result.netRevenue).toBeCloseTo(result.totalRevenue - result.fees, 6);
   });
 });
 
@@ -235,8 +250,6 @@ describe("simulateLimitSell", () => {
 
 describe("calculateWinProfit", () => {
   it("calculates profit for a winning trade", () => {
-    // Buy 10 shares at $0.95, each pays $1.00 on win
-    // Profit = (1 - 0.95) × 10 - fees = 0.5 - 0.01 = 0.49
     const profit = calculateWinProfit(0.95, 10, 0.01);
     expect(profit).toBeCloseTo(0.49, 4);
   });
@@ -255,8 +268,6 @@ describe("calculateWinProfit", () => {
 
 describe("calculateLossAmount", () => {
   it("calculates full loss for a losing trade", () => {
-    // Buy 10 shares at $0.95, market resolves to $0
-    // Loss = -(0.95 × 10 + 0.01) = -9.51
     const loss = calculateLossAmount(0.95, 10, 0.01);
     expect(loss).toBeCloseTo(-9.51, 4);
   });
@@ -269,15 +280,11 @@ describe("calculateLossAmount", () => {
 
 describe("calculateEarlyExitPnl", () => {
   it("calculates partial loss for stop-loss exit", () => {
-    // Buy at 0.95, sell at 0.80
-    // PnL = (0.80 - 0.95) × 10 - 0.01 - 0.005 = -1.515
     const pnl = calculateEarlyExitPnl(0.95, 0.8, 10, 0.01, 0.005);
     expect(pnl).toBeCloseTo(-1.515, 4);
   });
 
   it("calculates profit for a profitable early exit", () => {
-    // Buy at 0.50, sell at 0.70
-    // PnL = (0.70 - 0.50) × 10 - 0.01 - 0.01 = 1.98
     const pnl = calculateEarlyExitPnl(0.5, 0.7, 10, 0.01, 0.01);
     expect(pnl).toBeCloseTo(1.98, 4);
   });
@@ -285,7 +292,6 @@ describe("calculateEarlyExitPnl", () => {
   it("stop-loss loss is smaller than full loss", () => {
     const fullLoss = calculateLossAmount(0.95, 10, 0.01);
     const stopLoss = calculateEarlyExitPnl(0.95, 0.8, 10, 0.01, 0.005);
-    // Stop-loss should lose less money (less negative)
     expect(stopLoss).toBeGreaterThan(fullLoss);
   });
 });

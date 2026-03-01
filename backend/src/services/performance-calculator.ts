@@ -1,5 +1,5 @@
 import { createModuleLogger } from "../utils/logger.js";
-import { getDb } from "../db/client.js";
+import { getDb, getPortfolio } from "../db/client.js";
 import * as schema from "../db/schema.js";
 import { eq, desc, and, gte, sql } from "drizzle-orm";
 import Decimal from "decimal.js";
@@ -11,7 +11,9 @@ export type TimePeriod = "1D" | "1W" | "1M" | "ALL";
 export interface PerformanceMetrics {
   period: TimePeriod;
   totalPnl: string;
-  totalInvested: string;
+  /** Total actual cost spent across all trades in the period */
+  totalDeployed: string;
+  /** ROI = (portfolioValue - initialCapital) / initialCapital × 100 */
   roi: string;
   totalTrades: number;
   wins: number;
@@ -25,6 +27,12 @@ export interface PerformanceMetrics {
   avgBtcDistance: string;
   openPositions: number;
   unrealizedPnl: string;
+  /** Current cash balance from portfolio */
+  cashBalance: string;
+  /** Initial capital from portfolio */
+  initialCapital: string;
+  /** Estimated open positions value (needs live prices — computed by caller) */
+  openPositionsValue: string;
 }
 
 function getPeriodStart(period: TimePeriod): Date | null {
@@ -43,6 +51,7 @@ function getPeriodStart(period: TimePeriod): Date | null {
 export async function calculatePortfolioPerformance(
   period: TimePeriod,
   livePriceMap?: Map<string, number>,
+  openPositionsValue?: number,
 ): Promise<PerformanceMetrics> {
   const db = getDb();
   const periodStart = getPeriodStart(period);
@@ -63,8 +72,18 @@ export async function calculatePortfolioPerformance(
       ? await baseQuery.where(and(...conditions))
       : await baseQuery;
 
+  // Load portfolio state for ROI calculation
+  const portfolio = await getPortfolio();
+  const cashBalance = portfolio
+    ? new Decimal(portfolio.cashBalance)
+    : new Decimal(0);
+  const initialCapital = portfolio
+    ? new Decimal(portfolio.initialCapital)
+    : new Decimal(0);
+  const positionsValue = new Decimal(openPositionsValue ?? 0);
+
   let totalPnl = new Decimal(0);
-  let totalInvested = new Decimal(0);
+  let totalDeployed = new Decimal(0);
   let totalFees = new Decimal(0);
   let wins = 0;
   let losses = 0;
@@ -78,8 +97,8 @@ export async function calculatePortfolioPerformance(
   let unrealizedPnl = new Decimal(0);
 
   for (const trade of trades) {
-    const invested = new Decimal(trade.simulatedUsdAmount);
-    totalInvested = totalInvested.plus(invested);
+    const cost = new Decimal(trade.actualCost);
+    totalDeployed = totalDeployed.plus(cost);
     totalFees = totalFees.plus(new Decimal(trade.entryFees ?? "0"));
 
     if (trade.status === "SETTLED" && trade.realizedPnl !== null) {
@@ -120,9 +139,17 @@ export async function calculatePortfolioPerformance(
   const totalTrades = trades.length;
   const winRate =
     closedTrades > 0 ? ((wins / closedTrades) * 100).toFixed(2) : "0.00";
-  const roi = totalInvested.gt(0)
-    ? totalPnl.div(totalInvested).mul(100).toFixed(2)
+
+  // ROI = (portfolioValue - initialCapital) / initialCapital × 100
+  const portfolioValue = cashBalance.plus(positionsValue);
+  const roi = initialCapital.gt(0)
+    ? portfolioValue
+        .minus(initialCapital)
+        .div(initialCapital)
+        .mul(100)
+        .toFixed(2)
     : "0.00";
+
   const avgWin = wins > 0 ? winPnlSum.div(wins).toFixed(6) : "0";
   const avgLoss = losses > 0 ? lossPnlSum.div(losses).toFixed(6) : "0";
   const avgBtcDistance =
@@ -133,7 +160,7 @@ export async function calculatePortfolioPerformance(
   return {
     period,
     totalPnl: totalPnl.toFixed(6),
-    totalInvested: totalInvested.toFixed(2),
+    totalDeployed: totalDeployed.toFixed(2),
     roi,
     totalTrades,
     wins,
@@ -147,5 +174,8 @@ export async function calculatePortfolioPerformance(
     avgBtcDistance,
     openPositions,
     unrealizedPnl: unrealizedPnl.toFixed(6),
+    cashBalance: cashBalance.toFixed(2),
+    initialCapital: initialCapital.toFixed(2),
+    openPositionsValue: positionsValue.toFixed(2),
   };
 }

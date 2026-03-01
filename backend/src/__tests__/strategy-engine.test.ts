@@ -38,7 +38,7 @@ vi.mock("../utils/config.js", () => ({
       momentumMinChangeUsd: 30,
       minOracleLeadUsd: 50,
     },
-    simulation: { amountUsd: 1 },
+    portfolio: { startingCapital: 100, slots: 5 },
     logging: { level: "silent" },
     env: "test",
   }),

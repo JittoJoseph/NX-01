@@ -8,7 +8,6 @@
 
 export interface SimulatedTrade {
   id: string;
-  experimentId: string | null;
   marketId: string | null;
   tokenId: string | null;
   marketCategory: string | null;
@@ -19,19 +18,24 @@ export interface SimulatedTrade {
   entryTs: string;
   entryPrice: string;
   entryShares: string;
-  simulatedUsdAmount: string;
+  /** Budget allocated from portfolio (portfolioValue / slots) */
+  positionBudget: string;
+  /** Actual USD spent (shares × avgFillPrice + fees) */
+  actualCost: string;
   entryFees: string | null;
-  feeRateBps: number | null;
   fillStatus: string | null;
   btcPriceAtEntry: string | null;
   btcTargetPrice: string | null;
   btcDistanceUsd: string | null;
+  /** BTC momentum direction at entry */
+  momentumDirection: string | null;
+  /** BTC momentum change in USD at entry */
+  momentumChangeUsd: string | null;
   exitPrice: string | null;
   exitTs: string | null;
   exitOutcome: string | null;
   realizedPnl: string | null;
   status: string;
-  strategyTrigger: string | null;
   orderbookSnapshot: unknown;
   raw: unknown;
   createdAt: string;
@@ -104,14 +108,20 @@ export interface SystemStats {
     entryPriceThreshold: number;
     maxEntryPrice: number;
     tradeFromWindowSeconds: number;
-    simulationAmountUsd: number;
+    startingCapital: number;
+    portfolioSlots: number;
     maxSimultaneousPositions: number;
     minBtcDistanceUsd: number;
     stopLossEnabled: boolean;
-    stopLossThreshold: number;
+    stopLossPriceTrigger: number;
     momentumEnabled?: boolean;
     momentumLookbackMs?: number;
     momentumMinChangeUsd?: number;
+  };
+  portfolio?: {
+    cashBalance: number;
+    initialCapital: number;
+    openPositionsValue: number;
   };
 }
 
@@ -172,7 +182,7 @@ export interface DiscoveredMarket {
 export interface PerformanceMetrics {
   period: string;
   totalPnl: string;
-  totalInvested: string;
+  totalDeployed: string;
   roi: string;
   totalTrades: number;
   wins: number;
@@ -186,6 +196,75 @@ export interface PerformanceMetrics {
   avgBtcDistance: string;
   openPositions: number;
   unrealizedPnl: string;
+  cashBalance: string;
+  initialCapital: string;
+  openPositionsValue: string;
+}
+
+export interface PortfolioState {
+  initialCapital: number;
+  cashBalance: number;
+  openPositionsValue: number;
+  portfolioValue: number;
+  roi: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ============================================
+// Monte Carlo analysis types
+// ============================================
+
+export interface MonteCarloHistogram {
+  min: number;
+  max: number;
+  count: number;
+}
+
+export interface EquityCurvePoint {
+  tradeIndex: number;
+  balance: number;
+}
+
+export interface PercentileEquityCurve {
+  percentile: number;
+  curve: EquityCurvePoint[];
+}
+
+export interface MonteCarloResult {
+  config: { simulations: number; tradesPerSim: number };
+  historical: {
+    totalSettled: number;
+    wins: number;
+    losses: number;
+    winRate: number;
+    avgWinPnl: number;
+    avgLossPnl: number;
+    avgWinPct: number;
+    avgLossPct: number;
+    largestWin: number;
+    largestLoss: number;
+    profitFactor: number;
+    expectancy: number;
+    pnlDistribution: number[];
+  };
+  distribution: {
+    histogram: MonteCarloHistogram[];
+    percentiles: {
+      p5: number;
+      p25: number;
+      p50: number;
+      p75: number;
+      p95: number;
+    };
+    mean: number;
+    stdDev: number;
+    profitProbability: number;
+    ruinProbability: number;
+  };
+  equityCurves: PercentileEquityCurve[];
+  drawdown: { median: number; p95: number; worst: number };
+  startingCapital: number;
 }
 
 // ============================================

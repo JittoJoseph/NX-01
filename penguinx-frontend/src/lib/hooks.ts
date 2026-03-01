@@ -323,8 +323,8 @@ export function usePerformanceRealtime(
         const newRealizedPnl = oldRealizedPnl + pnl;
 
         // Calculate ROI
-        const totalInvested = parseFloat(prev.totalInvested || "1");
-        const newRoi = (newTotalPnl / totalInvested) * 100;
+        const totalDeployed = parseFloat(prev.totalDeployed || "1");
+        const newRoi = (newTotalPnl / totalDeployed) * 100;
 
         // Calculate win rate
         const newWinRate =
@@ -740,7 +740,7 @@ export function useActivityLog() {
         id,
         kind: "TRADE_OPENED",
         title: "TRADE OPENED",
-        detail: `${outcome} ${price}${btc}${momStr} — $${trade.simulatedUsdAmount}`,
+        detail: `${outcome} ${price}${btc}${momStr} — $${trade.actualCost}`,
         ts: Date.now(),
         trade,
       };

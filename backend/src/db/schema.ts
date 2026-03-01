@@ -43,6 +43,18 @@ export const markets = pgTable(
   }),
 );
 
+/** Portfolio state (single-row table) */
+export const portfolio = pgTable("portfolio", {
+  id: integer("id").primaryKey().default(1),
+  initialCapital: decimal("initial_capital", {
+    precision: 18,
+    scale: 8,
+  }).notNull(),
+  cashBalance: decimal("cash_balance", { precision: 18, scale: 8 }).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 /** Simulated trades */
 export const simulatedTrades = pgTable(
   "simulated_trades",
@@ -50,7 +62,6 @@ export const simulatedTrades = pgTable(
     id: text("id")
       .primaryKey()
       .$defaultFn(() => crypto.randomUUID()),
-    experimentId: text("experiment_id"),
     marketId: text("market_id"),
     tokenId: text("token_id"),
     marketCategory: text("market_category"),
@@ -62,19 +73,25 @@ export const simulatedTrades = pgTable(
     entryTs: timestamp("entry_ts").notNull(),
     entryPrice: decimal("entry_price", { precision: 18, scale: 8 }).notNull(),
     entryShares: decimal("entry_shares", { precision: 18, scale: 8 }).notNull(),
-    simulatedUsdAmount: decimal("simulated_usd_amount", {
+    /** Budget allocated from portfolio (portfolioValue / slots) */
+    positionBudget: decimal("position_budget", {
       precision: 18,
       scale: 8,
-    })
-      .default("1")
-      .notNull(),
+    }).notNull(),
+    /** Actual USD spent (shares × avgFillPrice + fees) — deducted from cash */
+    actualCost: decimal("actual_cost", { precision: 18, scale: 8 }).notNull(),
     entryFees: decimal("entry_fees", { precision: 18, scale: 8 }).default("0"),
-    feeRateBps: integer("fee_rate_bps"),
     fillStatus: text("fill_status").default("FULL"), // FULL | PARTIAL | FAILED
     // BTC context at entry
     btcPriceAtEntry: decimal("btc_price_at_entry", { precision: 18, scale: 2 }),
     btcTargetPrice: decimal("btc_target_price", { precision: 18, scale: 2 }),
     btcDistanceUsd: decimal("btc_distance_usd", {
+      precision: 10,
+      scale: 4,
+    }),
+    // Momentum context at entry
+    momentumDirection: text("momentum_direction"), // "UP" | "DOWN"
+    momentumChangeUsd: decimal("momentum_change_usd", {
       precision: 10,
       scale: 4,
     }),
@@ -85,7 +102,6 @@ export const simulatedTrades = pgTable(
     realizedPnl: decimal("realized_pnl", { precision: 18, scale: 8 }),
     // Status
     status: text("status").default("OPEN").notNull(),
-    strategyTrigger: text("strategy_trigger"),
     orderbookSnapshot: jsonb("orderbook_snapshot"),
     raw: jsonb("raw"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -95,7 +111,6 @@ export const simulatedTrades = pgTable(
     marketIdIdx: index("st_market_id_idx").on(table.marketId),
     statusIdx: index("st_status_idx").on(table.status),
     entryTsIdx: index("st_entry_ts_idx").on(table.entryTs),
-    experimentIdIdx: index("st_experiment_id_idx").on(table.experimentId),
     // Prevent duplicate open trades per market+token
     uqOpenTradePerToken: uniqueIndex("uq_open_trade_per_market_token")
       .on(table.marketId, table.tokenId)

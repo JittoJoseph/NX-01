@@ -21,7 +21,8 @@ async function main(): Promise<void> {
       threshold: config.strategy.entryPriceThreshold,
       maxEntryPrice: config.strategy.maxEntryPrice,
       tradeWindowSec: config.strategy.tradeFromWindowSeconds,
-      simAmount: config.simulation.amountUsd,
+      startingCapital: config.portfolio.startingCapital,
+      portfolioSlots: config.portfolio.slots,
       maxPositions: config.strategy.maxSimultaneousPositions,
       minBtcDistance: config.strategy.minBtcDistanceUsd,
       stopLoss: config.strategy.stopLossEnabled

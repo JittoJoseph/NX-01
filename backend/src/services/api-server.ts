@@ -7,7 +7,7 @@ import { createServer, type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { createModuleLogger } from "../utils/logger.js";
 import { getConfig } from "../utils/config.js";
-import { getDb } from "../db/client.js";
+import { getDb, wipeAndResetPortfolio, getPortfolio } from "../db/client.js";
 import * as schema from "../db/schema.js";
 import { eq, desc, and, sql, gte } from "drizzle-orm";
 import { getMarketOrchestrator } from "./market-orchestrator.js";
@@ -16,6 +16,7 @@ import {
   calculatePortfolioPerformance,
   type TimePeriod,
 } from "./performance-calculator.js";
+import { runMonteCarloAnalysis } from "./monte-carlo.js";
 
 const logger = createModuleLogger("api-server");
 
@@ -159,7 +160,8 @@ export class ApiServer {
             entryPriceThreshold: config.strategy.entryPriceThreshold,
             maxEntryPrice: config.strategy.maxEntryPrice,
             tradeFromWindowSeconds: config.strategy.tradeFromWindowSeconds,
-            simulationAmountUsd: config.simulation.amountUsd,
+            startingCapital: config.portfolio.startingCapital,
+            portfolioSlots: config.portfolio.slots,
             maxSimultaneousPositions: config.strategy.maxSimultaneousPositions,
             minBtcDistanceUsd: config.strategy.minBtcDistanceUsd,
             minOracleLeadUsd: config.strategy.minOracleLeadUsd,
@@ -277,7 +279,13 @@ export class ApiServer {
           return;
         }
 
-        const metrics = await calculatePortfolioPerformance(period);
+        const orchestrator = getMarketOrchestrator();
+        const openPositionsValue = orchestrator.computeOpenPositionsValue();
+        const metrics = await calculatePortfolioPerformance(
+          period,
+          undefined,
+          openPositionsValue,
+        );
         res.json(metrics);
       } catch (error) {
         logger.error({ error }, "Performance error");
@@ -301,12 +309,12 @@ export class ApiServer {
       }
     });
 
-    // Admin: wipe — clears all DB data and pauses the system until restart
+    // Admin: wipe — clears all trade data and resets portfolio
     this.app.delete("/api/admin/wipe", async (req: Request, res: Response) => {
       try {
         const config = getConfig();
         const password = req.headers.authorization?.replace("Bearer ", "");
-        if (!password || password !== config.wipe.password) {
+        if (!password || password !== config.admin.password) {
           res.status(401).json({ error: "Unauthorized" });
           return;
         }
@@ -315,21 +323,103 @@ export class ApiServer {
         const orchestrator = getMarketOrchestrator();
         orchestrator.pause();
 
-        const db = getDb();
-        await db.delete(schema.simulatedTrades);
-        await db.delete(schema.markets);
-        await db.delete(schema.auditLogs);
+        await wipeAndResetPortfolio(config.portfolio.startingCapital);
 
-        logger.warn(
-          "Database wiped and system paused via admin endpoint — restart required",
-        );
+        // Also clear markets
+        const db = getDb();
+        await db.delete(schema.markets);
+
+        logger.warn("Database wiped and portfolio reset via admin endpoint");
         res.json({
           success: true,
-          message: "All data wiped. System paused — restart to resume.",
+          message:
+            "All data wiped, portfolio reset. Use POST /api/admin/resume to resume trading.",
         });
       } catch (error) {
         logger.error({ error }, "Wipe error");
         res.status(500).json({ error: "Wipe failed" });
+      }
+    });
+
+    // Admin: pause — stop new trades, keep existing positions tracked
+    this.app.post("/api/admin/pause", (req: Request, res: Response) => {
+      const config = getConfig();
+      const password = req.headers.authorization?.replace("Bearer ", "");
+      if (!password || password !== config.admin.password) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      const orchestrator = getMarketOrchestrator();
+      orchestrator.pause();
+      res.json({ success: true, paused: true });
+    });
+
+    // Admin: resume — resume trading after a pause
+    this.app.post("/api/admin/resume", async (req: Request, res: Response) => {
+      try {
+        const config = getConfig();
+        const password = req.headers.authorization?.replace("Bearer ", "");
+        if (!password || password !== config.admin.password) {
+          res.status(401).json({ error: "Unauthorized" });
+          return;
+        }
+        const orchestrator = getMarketOrchestrator();
+        await orchestrator.resume();
+        res.json({ success: true, paused: false });
+      } catch (error) {
+        logger.error({ error }, "Resume error");
+        res.status(500).json({ error: "Resume failed" });
+      }
+    });
+
+    // Portfolio state
+    this.app.get("/api/portfolio", async (_req: Request, res: Response) => {
+      try {
+        const portfolio = await getPortfolio();
+        if (!portfolio) {
+          res.status(404).json({ error: "Portfolio not initialised" });
+          return;
+        }
+        const orchestrator = getMarketOrchestrator();
+        const openPositionsValue = orchestrator.computeOpenPositionsValue();
+        const cashBalance = parseFloat(portfolio.cashBalance);
+        const initialCapital = parseFloat(portfolio.initialCapital);
+        const portfolioValue = cashBalance + openPositionsValue;
+
+        res.json({
+          initialCapital,
+          cashBalance,
+          openPositionsValue,
+          portfolioValue,
+          roi:
+            initialCapital > 0
+              ? ((portfolioValue - initialCapital) / initialCapital) * 100
+              : 0,
+          createdAt: portfolio.createdAt,
+          updatedAt: portfolio.updatedAt,
+        });
+      } catch (error) {
+        logger.error({ error }, "Portfolio error");
+        res.status(500).json({ error: "Failed to get portfolio" });
+      }
+    });
+
+    // Monte Carlo analysis
+    this.app.get("/api/analysis", async (req: Request, res: Response) => {
+      try {
+        const simulations = parseInt(req.query.simulations as string) || 10_000;
+        const tradesPerSim = parseInt(req.query.tradesPerSim as string) || 100;
+        const result = await runMonteCarloAnalysis({
+          simulations: Math.min(simulations, 50_000),
+          tradesPerSim: Math.min(tradesPerSim, 500),
+        });
+        res.json(result);
+      } catch (error: any) {
+        const msg = error?.message || "Analysis failed";
+        logger.error({ error }, "Monte Carlo analysis error");
+        res
+          .status(error?.message?.includes("No settled") ? 400 : 500)
+          .json({ error: msg });
       }
     });
   }
@@ -354,12 +444,18 @@ export class ApiServer {
     const orchestrator = getMarketOrchestrator();
     const btcWatcher = getBtcPriceWatcher();
     const stats = orchestrator.getStats();
+    const pm = orchestrator.portfolioManager;
     this.broadcast({
       type: "systemState",
       data: {
         ...stats,
         liveMarkets: orchestrator.getLiveMarkets(),
         btcPrice: btcWatcher.getCurrentPrice(),
+        portfolio: {
+          cashBalance: pm.getCashBalance(),
+          initialCapital: pm.getInitialCapital(),
+          openPositionsValue: orchestrator.computeOpenPositionsValue(),
+        },
         timestamp: Date.now(),
       },
     });

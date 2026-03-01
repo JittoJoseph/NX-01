@@ -18,7 +18,6 @@ export interface ExecutionResult {
   isPartialFill: boolean;
   fillDetails: FillDetail[];
   orderbookSnapshot: unknown;
-  feeRateBps: number;
 }
 
 interface FillDetail {
@@ -48,13 +47,11 @@ interface FillDetail {
  * @param orderbook   Live CLOB orderbook snapshot
  * @param usdAmount   USDC budget for this order
  * @param limitPrice  Maximum price we are willing to pay per share
- * @param feeRateBps  Fee rate in basis points from CLOB API (>0 = fees enabled)
  */
 export function simulateLimitBuy(
   orderbook: Orderbook,
   usdAmount: number,
   limitPrice: number,
-  feeRateBps: number,
 ): ExecutionResult {
   // Sort asks by price ascending (best first)
   const asks = [...orderbook.asks].sort(
@@ -77,7 +74,7 @@ export function simulateLimitBuy(
     if (askPrice > limitPrice) break;
 
     // Calculate how many shares we can buy at this level
-    const feePerShare = calculateFeePerShare(askPrice, feeRateBps);
+    const feePerShare = calculateFeePerShare(askPrice);
     const costPerShare = new Decimal(askPrice).plus(feePerShare);
 
     // Max shares we can afford at this level
@@ -139,12 +136,11 @@ export function simulateLimitBuy(
       tick_size: orderbook.tick_size,
       timestamp: orderbook.timestamp,
     },
-    feeRateBps,
   };
 }
 
 /**
- * Calculate fee per share using Polymarket's documented formula for 5-min / 15-min crypto markets.
+ * Calculate fee per share using Polymarket's documented formula for crypto markets.
  *
  * Formula (from Polymarket docs):
  *   fee_per_share = feeRate × (p × (1-p))^exponent
@@ -158,24 +154,15 @@ export function simulateLimitBuy(
  *   fee_per_share = 0.25 × (0.97 × 0.03)^2 = 0.25 × 0.000847 ≈ 0.000212 USDC/share
  *   (~0.02% effective rate — nearly free)
  *
- * Note: `feeRateBps` is the value embedded in real CLOB orders (used by the
- * smart contract for signature verification). It is used here solely as a
- * "fees-enabled?" gate — feeRateBps > 0 means this is a fee-enabled market
- * (5M/15M crypto). The actual per-share fee is always computed from the
- * Polymarket formula above, NOT from feeRateBps directly.
- *
  * Maker rebate: in real limit orders the maker receives 20% of the fee back.
  * This simulation conservatively models taker fees (no rebate), which slightly
  * overstates costs at our near-extreme entry prices.
  *
  * Fees are rounded to 4 decimal places (smallest fee unit: 0.0001 USDC).
  */
-function calculateFeePerShare(price: number, feeRateBps: number): number {
-  // Gate: if feeRateBps is 0 this is a fee-free market
-  if (feeRateBps <= 0) return 0;
-
-  const feeRate = CRYPTO_FEE.RATE; // 0.25 for 5M/15M crypto
-  const exponent = CRYPTO_FEE.EXPONENT; // 2 for 5M/15M crypto
+function calculateFeePerShare(price: number): number {
+  const feeRate = CRYPTO_FEE.RATE; // 0.25 for crypto
+  const exponent = CRYPTO_FEE.EXPONENT; // 2
   const pq = price * (1 - price); // p × (1-p), maximised at p=0.5
   const fee = feeRate * Math.pow(pq, exponent);
 
@@ -197,7 +184,6 @@ export interface SellExecutionResult {
   isPartialFill: boolean;
   fillDetails: SellFillDetail[];
   orderbookSnapshot: unknown;
-  feeRateBps: number;
 }
 
 interface SellFillDetail {
@@ -220,13 +206,11 @@ interface SellFillDetail {
  * @param orderbook    Live CLOB orderbook snapshot
  * @param sharesToSell Number of shares to sell
  * @param limitPrice   Minimum price we are willing to accept per share (floor)
- * @param feeRateBps   Fee rate in basis points from CLOB API
  */
 export function simulateLimitSell(
   orderbook: Orderbook,
   sharesToSell: number,
   limitPrice: number,
-  feeRateBps: number,
 ): SellExecutionResult {
   // Sort bids by price descending (best first)
   const bids = [...orderbook.bids].sort(
@@ -248,7 +232,7 @@ export function simulateLimitSell(
     // Only sell at prices at or above our limit
     if (bidPrice < limitPrice) break;
 
-    const feePerShare = calculateFeePerShare(bidPrice, feeRateBps);
+    const feePerShare = calculateFeePerShare(bidPrice);
     const sharesToFillAtLevel = Math.min(remainingShares.toNumber(), bidSize);
 
     if (sharesToFillAtLevel <= 0) continue;
@@ -304,7 +288,6 @@ export function simulateLimitSell(
       tick_size: orderbook.tick_size,
       timestamp: orderbook.timestamp,
     },
-    feeRateBps,
   };
 }
 
