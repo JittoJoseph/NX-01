@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { Header } from "@/components/header";
 import Link from "next/link";
 import { RefreshCw, AlertTriangle, TrendingUp } from "lucide-react";
@@ -20,26 +20,38 @@ const fmtUsd = (n: number, dp = 2) =>
 const fmtPct = (n: number, dp = 1) => `${n.toFixed(dp)}%`;
 const fmtDelta = (n: number, dp = 2) => `${n >= 0 ? "+" : "-"}${fmtUsd(n, dp)}`;
 
+const TRADES_OPTIONS = [25, 50, 100, 200, 500] as const;
+const SIM_OPTIONS = [1_000, 5_000, 10_000, 25_000] as const;
+type TradesOption = (typeof TRADES_OPTIONS)[number] | "all";
+type SimOption = (typeof SIM_OPTIONS)[number];
+
 //  Page
 export default function AnalysisPage() {
   const [result, setResult] = useState<MonteCarloResult | null>(null);
   const [noData, setNoData] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [tradesPerSim, setTradesPerSim] = useState<TradesOption>(100);
+  const [simulations, setSimulations] = useState<SimOption>(10_000);
+  // Tracks the last known settled count so "all" can resolve without a dep on `result`
+  const totalSettledRef = useRef<number>(500);
 
   const fetchAnalysis = useCallback(async () => {
     setLoading(true);
     setError(null);
     setNoData(false);
+    const resolvedTrades =
+      tradesPerSim === "all" ? totalSettledRef.current : tradesPerSim;
     try {
       const data = await api.getAnalysis({
-        simulations: 10_000,
-        tradesPerSim: 100,
+        simulations,
+        tradesPerSim: resolvedTrades,
       });
       if (data === null) {
         setNoData(true);
         setResult(null);
       } else {
+        totalSettledRef.current = data.historical.totalSettled;
         setResult(data);
       }
     } catch (e: any) {
@@ -47,7 +59,7 @@ export default function AnalysisPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [simulations, tradesPerSim]);
 
   useEffect(() => {
     fetchAnalysis();
@@ -61,7 +73,7 @@ export default function AnalysisPage() {
       <Header />
       <main className="container mx-auto px-4 py-5 max-w-6xl space-y-3">
         {/* Top bar */}
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-3">
             <Link
               href="/"
@@ -74,14 +86,73 @@ export default function AnalysisPage() {
               MONTE CARLO
             </span>
           </div>
-          <button
-            onClick={fetchAnalysis}
-            disabled={loading}
-            className="flex items-center gap-1.5 text-[10px] font-mono tracking-widest px-3 py-1.5 rounded border border-border/30 bg-card/30 hover:bg-muted/30 transition-colors disabled:opacity-40"
-          >
-            <RefreshCw size={10} className={loading ? "animate-spin" : ""} />
-            {loading ? "RUNNING" : "RE-RUN"}
-          </button>
+
+          {/* Filters */}
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[9px] font-mono text-muted-foreground/40 tracking-widest">
+                TRADES/SIM
+              </span>
+              <div className="flex border border-border/20 rounded overflow-hidden">
+                {TRADES_OPTIONS.map((opt) => (
+                  <button
+                    key={opt}
+                    onClick={() => setTradesPerSim(opt)}
+                    disabled={loading}
+                    className={`text-[10px] font-mono px-2.5 py-1 transition-colors disabled:opacity-40 ${
+                      tradesPerSim === opt
+                        ? "bg-muted text-foreground"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {opt}
+                  </button>
+                ))}
+                <button
+                  onClick={() => setTradesPerSim("all")}
+                  disabled={loading}
+                  className={`text-[10px] font-mono px-2.5 py-1 transition-colors disabled:opacity-40 ${
+                    tradesPerSim === "all"
+                      ? "bg-muted text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  ALL
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <span className="text-[9px] font-mono text-muted-foreground/40 tracking-widest">
+                SIMS
+              </span>
+              <div className="flex border border-border/20 rounded overflow-hidden">
+                {SIM_OPTIONS.map((opt) => (
+                  <button
+                    key={opt}
+                    onClick={() => setSimulations(opt)}
+                    disabled={loading}
+                    className={`text-[10px] font-mono px-2.5 py-1 transition-colors disabled:opacity-40 ${
+                      simulations === opt
+                        ? "bg-muted text-foreground"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {opt >= 1000 ? `${opt / 1000}k` : opt}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <button
+              onClick={fetchAnalysis}
+              disabled={loading}
+              className="flex items-center gap-1.5 text-[10px] font-mono tracking-widest px-3 py-1.5 rounded border border-border/30 bg-card/30 hover:bg-muted/30 transition-colors disabled:opacity-40"
+            >
+              <RefreshCw size={10} className={loading ? "animate-spin" : ""} />
+              {loading ? "RUNNING…" : "RE-RUN"}
+            </button>
+          </div>
         </div>
 
         {/* Error */}
@@ -100,7 +171,7 @@ export default function AnalysisPage() {
               className="text-muted-foreground/20 animate-pulse"
             />
             <p className="text-[10px] font-mono text-muted-foreground/30 tracking-widest">
-              RUNNING {(10_000).toLocaleString()} SIMULATIONS
+              RUNNING {simulations.toLocaleString()} SIMULATIONS…
             </p>
           </div>
         )}
