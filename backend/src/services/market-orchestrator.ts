@@ -349,8 +349,16 @@ export class MarketOrchestrator extends EventEmitter {
 
   /**
    * Fill btcPriceAtWindowStart for any market whose window is now open.
-   * Uses historical BTC price data for accuracy. Only falls back to current
-   * price for markets loaded on restart where historical data isn't available.
+   *
+   * Strategy:
+   *  1. If our price history predates the window start, use getPriceAt() for
+   *     accuracy.  This is the normal case for markets discovered while running.
+   *  2. Otherwise (server restarted mid-window, no history covering that moment),
+   *     skip the historical lookup entirely and use the current live BTC price.
+   *     This avoids flooding the log with repeated "No historical BTC price"
+   *     warnings on every price tick while we wait for the BTC WS to connect.
+   *  3. If current price is also null (BTC WS not yet connected), silently wait
+   *     for the next tick — we’ll fill as soon as the first price arrives.
    */
   private tryFillBtcWindowStart(): void {
     const nowMs = Date.now();
@@ -364,14 +372,23 @@ export class MarketOrchestrator extends EventEmitter {
       const windowStartMs = state.endDate.getTime() - windowDurationMs;
       if (nowMs < windowStartMs) continue; // window not open yet
 
-      // Try to get exact historical price first
-      let resolved = this.btcWatcher.getPriceAt(windowStartMs);
+      let resolved: number | null = null;
 
-      // For markets loaded on restart, if no historical data, use current price
-      // This is acceptable since the system wasn't running when the window opened
+      // Only attempt a historical lookup if our buffer actually predates the
+      // window start.  If the oldest history entry is newer than windowStartMs
+      // (or the buffer is empty), getPriceAt() will always return null — no
+      // point calling it and producing noise.
+      const oldestHistoryMs = this.btcWatcher.getOldestHistoryTimestamp();
+      if (oldestHistoryMs !== null && oldestHistoryMs <= windowStartMs) {
+        resolved = this.btcWatcher.getPriceAt(windowStartMs);
+      }
+
+      // Fallback: use current live price.  This is the expected path for
+      // markets that were already open when the server (re)started.
       if (resolved === null) {
-        resolved = this.btcWatcher.getCurrentPrice()?.price ?? null;
-        if (resolved !== null) {
+        const current = this.btcWatcher.getCurrentPrice();
+        if (current !== null) {
+          resolved = current.price;
           logger.info(
             { marketId: state.marketId, windowStartMs, btcPrice: resolved },
             "Using current BTC price for restarted market (no historical data available)",
@@ -379,7 +396,7 @@ export class MarketOrchestrator extends EventEmitter {
         }
       }
 
-      if (resolved === null) continue; // no BTC data yet
+      if (resolved === null) continue; // BTC not connected yet — wait silently
 
       state.btcPriceAtWindowStart = resolved;
       logger.info(

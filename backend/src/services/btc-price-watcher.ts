@@ -132,7 +132,7 @@ export class BtcPriceWatcher extends EventEmitter {
         "Found historical BTC price",
       );
     } else {
-      logger.warn(
+      logger.debug(
         {
           targetMs,
           historySize: this.priceHistory.length,
@@ -143,6 +143,16 @@ export class BtcPriceWatcher extends EventEmitter {
     }
 
     return best?.price ?? null;
+  }
+
+  /**
+   * Timestamp of the oldest entry in the price history buffer, or null if empty.
+   * Used by the orchestrator to decide whether it's worth calling getPriceAt().
+   */
+  getOldestHistoryTimestamp(): number | null {
+    return this.priceHistory.length > 0
+      ? (this.priceHistory[0]?.timestamp ?? null)
+      : null;
   }
 
   isConnected(): boolean {
@@ -160,10 +170,7 @@ export class BtcPriceWatcher extends EventEmitter {
    *   - Insufficient history (< 2 ticks)
    *   - Absolute change is below `minChangeUsd` (sideways chop)
    */
-  getMomentum(
-    lookbackMs: number,
-    minChangeUsd: number = 30,
-  ): MomentumSignal {
+  getMomentum(lookbackMs: number, minChangeUsd: number = 30): MomentumSignal {
     const now = Date.now();
     const cutoff = now - lookbackMs;
 
@@ -259,7 +266,7 @@ export class BtcPriceWatcher extends EventEmitter {
       logAudit(
         "warn",
         "SYSTEM",
-        "BTC price feed stale (no ticks for >30s). Force-reconnecting to auto-heal."
+        "BTC price feed stale (no ticks for >30s). Force-reconnecting to auto-heal.",
       ).catch(() => {});
 
       // Force-close the existing WebSocket (even if readyState === OPEN)
@@ -322,13 +329,11 @@ export class BtcPriceWatcher extends EventEmitter {
               topic: "crypto_prices_chainlink",
               type: "*",
               filters: '{"symbol":"btc/usd"}',
-            }
+            },
           ],
         });
         this.ws!.send(subscribeMsg);
-        logger.debug(
-          "RTDS subscribed: crypto_prices_chainlink",
-        );
+        logger.debug("RTDS subscribed: crypto_prices_chainlink");
 
         // Keepalive: send TEXT "PING" every 5 s per Polymarket RTDS docs
         this.pingTimer = setInterval(() => {
@@ -348,21 +353,37 @@ export class BtcPriceWatcher extends EventEmitter {
           const payload = msg["payload"] as Record<string, unknown> | undefined;
 
           // Real-time Chainlink logic
-          const isChainlink = topic === "crypto_prices_chainlink" && payload?.["symbol"] === "btc/usd";
+          const isChainlink =
+            topic === "crypto_prices_chainlink" &&
+            payload?.["symbol"] === "btc/usd";
 
           if (isChainlink && typeof payload?.["value"] === "number") {
-            const rawTs = typeof payload["timestamp"] === "number"
-              ? payload["timestamp"]
-              : ((msg["timestamp"] as number) ?? 0);
+            const rawTs =
+              typeof payload["timestamp"] === "number"
+                ? payload["timestamp"]
+                : ((msg["timestamp"] as number) ?? 0);
             this.setPrice(payload["value"] as number, rawTs);
             return;
           }
 
           // Handle Chainlink backfill (comes through crypto_prices topic with type="subscribe")
-          if (topic === "crypto_prices" && msg["type"] === "subscribe" && payload?.["symbol"] === "btc/usd" && Array.isArray(payload["data"])) {
+          if (
+            topic === "crypto_prices" &&
+            msg["type"] === "subscribe" &&
+            payload?.["symbol"] === "btc/usd" &&
+            Array.isArray(payload["data"])
+          ) {
             for (const item of payload["data"]) {
-              if (item && typeof item === "object" && typeof (item as any).timestamp === "number" && typeof (item as any).value === "number") {
-                this.setPrice((item as any).value as number, (item as any).timestamp as number);
+              if (
+                item &&
+                typeof item === "object" &&
+                typeof (item as any).timestamp === "number" &&
+                typeof (item as any).value === "number"
+              ) {
+                this.setPrice(
+                  (item as any).value as number,
+                  (item as any).timestamp as number,
+                );
               }
             }
             return;
@@ -378,14 +399,22 @@ export class BtcPriceWatcher extends EventEmitter {
           { code, reason: reason.toString() },
           "RTDS WebSocket closed",
         );
-        logAudit("warn", "SYSTEM", `BTC RTDS WebSocket closed (code: ${code})`).catch(() => {});
+        logAudit(
+          "warn",
+          "SYSTEM",
+          `BTC RTDS WebSocket closed (code: ${code})`,
+        ).catch(() => {});
         this.cleanup();
         this.scheduleReconnect();
       });
 
       this.ws.on("error", (error: Error) => {
         logger.error({ error: error.message }, "RTDS WebSocket error");
-        logAudit("error", "SYSTEM", `BTC RTDS WebSocket error: ${error.message}`).catch(() => {});
+        logAudit(
+          "error",
+          "SYSTEM",
+          `BTC RTDS WebSocket error: ${error.message}`,
+        ).catch(() => {});
       });
     } catch (error) {
       logger.error({ error }, "Failed to create RTDS WebSocket");
