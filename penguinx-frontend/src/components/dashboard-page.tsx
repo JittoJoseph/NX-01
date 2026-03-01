@@ -489,7 +489,8 @@ function TopDashboardSection({
   const portfolioValue = cashBalance + openPositionsValue;
   // Use live-calculated unrealized PnL instead of API value
   const unrealizedPnl = liveUnrealizedPnL;
-  const realizedPnl = netPnlBaseValue - unrealizedPnl;
+  // totalPnl from the API already sums only SETTLED trade realizedPnl — it IS realized PnL
+  const realizedPnl = netPnlBaseValue;
   const wins = performance?.wins || 0;
   const losses = performance?.losses || 0;
   const closedPositions = wins + losses;
