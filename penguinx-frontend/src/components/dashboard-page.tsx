@@ -7,6 +7,7 @@ import { TradesTable } from "./trades-table";
 import { TradeDetailPopup } from "./trade-detail-popup";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ExternalLink } from "lucide-react";
+import { pnlColor, formatPnl } from "@/lib/utils";
 import {
   useTrades,
   useSystemStats,
@@ -148,24 +149,18 @@ export function DashboardPage() {
   }, [liveMarkets, markets]);
 
   // Polymarket slug + question for the selected trade (for deep-link and modal header)
-  const selectedTradeSlug = useMemo(() => {
-    if (!selectedTrade) return null;
-    return (
-      liveMarkets.find((m) => m.marketId === selectedTrade.marketId)?.slug ??
-      markets.find((m) => m.id === selectedTrade.marketId)?.slug ??
-      null
-    );
-  }, [selectedTrade, liveMarkets, markets]);
-
-  const selectedTradeQuestion = useMemo(() => {
-    if (!selectedTrade) return null;
-    return (
-      liveMarkets.find((m) => m.marketId === selectedTrade.marketId)
-        ?.question ??
-      markets.find((m) => m.id === selectedTrade.marketId)?.question ??
-      null
-    );
-  }, [selectedTrade, liveMarkets, markets]);
+  const { slug: selectedTradeSlug, question: selectedTradeQuestion } =
+    useMemo(() => {
+      if (!selectedTrade) return { slug: null, question: null };
+      const live = liveMarkets.find(
+        (m) => m.marketId === selectedTrade.marketId,
+      );
+      const disc = markets.find((m) => m.id === selectedTrade.marketId);
+      return {
+        slug: live?.slug ?? disc?.slug ?? null,
+        question: live?.question ?? disc?.question ?? null,
+      };
+    }, [selectedTrade, liveMarkets, markets]);
 
   // Determine window label from config
   const windowLabel = stats?.config?.marketWindow
@@ -196,6 +191,7 @@ export function DashboardPage() {
           refetchMarkets={refetchMarkets}
           btcPriceAtWindowStartFallback={btcPriceAtWindowStartFallback}
           trades={trades}
+          liveMarkets={liveMarkets}
         />
 
         {/* ── Two-column: Trades + Sidebar ─────────── */}
@@ -437,6 +433,7 @@ function TopDashboardSection({
   refetchMarkets,
   btcPriceAtWindowStartFallback,
   trades,
+  liveMarkets,
 }: {
   stats: SystemStats | null;
   btcPrice: { price: number; timestamp: number } | null;
@@ -447,12 +444,12 @@ function TopDashboardSection({
   refetchMarkets: () => void;
   btcPriceAtWindowStartFallback: number | null;
   trades: SimulatedTrade[];
+  liveMarkets: LiveMarketInfo[];
 }) {
   const [period, setPeriod] = useState<"1D" | "1W" | "1M" | "ALL">("ALL");
   const { performance } = usePerformanceRealtime(period);
 
   // Get live unrealized PnL from open trades and current market prices
-  const liveMarkets = useLiveMarkets();
   const liveUnrealizedPnL = useUnrealizedPnL(trades, liveMarkets);
 
   // Animate NET P&L with smooth counter
@@ -800,12 +797,12 @@ function TopDashboardSection({
                   NET P&L
                 </div>
                 <div
-                  className={`text-3xl font-bold font-mono tabular-nums tracking-tight ${netPnl >= 0 ? "text-emerald-500" : "text-red-500"}`}
+                  className={`text-3xl font-bold font-mono tabular-nums tracking-tight ${pnlColor(netPnl)}`}
                 >
-                  {netPnl >= 0 ? "+" : "-"}${Math.abs(netPnl).toFixed(4)}
+                  {formatPnl(netPnl)}
                 </div>
                 <div
-                  className={`text-xs font-mono mt-1 ${roi >= 0 ? "text-emerald-500/70" : "text-red-500/70"}`}
+                  className={`text-xs font-mono mt-1 ${pnlColor(roi, "70")}`}
                 >
                   {roi >= 0 ? "+" : ""}
                   {roi.toFixed(2)}% ROI
@@ -817,10 +814,9 @@ function TopDashboardSection({
                     REALIZED
                   </div>
                   <div
-                    className={`text-sm font-bold font-mono tabular-nums ${realizedPnl >= 0 ? "text-emerald-500" : "text-red-500"}`}
+                    className={`text-sm font-bold font-mono tabular-nums ${pnlColor(realizedPnl)}`}
                   >
-                    {realizedPnl >= 0 ? "+" : "-"}$
-                    {Math.abs(realizedPnl).toFixed(4)}
+                    {formatPnl(realizedPnl)}
                   </div>
                 </div>
                 <div>
@@ -828,10 +824,9 @@ function TopDashboardSection({
                     UNREALIZED
                   </div>
                   <div
-                    className={`text-sm font-bold font-mono tabular-nums ${unrealizedPnl >= 0 ? "text-emerald-500" : "text-red-500"}`}
+                    className={`text-sm font-bold font-mono tabular-nums ${pnlColor(unrealizedPnl)}`}
                   >
-                    {unrealizedPnl >= 0 ? "+" : "-"}$
-                    {Math.abs(unrealizedPnl).toFixed(4)}
+                    {formatPnl(unrealizedPnl)}
                   </div>
                 </div>
               </div>
@@ -1340,8 +1335,7 @@ function ActivityPanel({
                         : "text-red-400"
                     }`}
                   >
-                    {(entry.pnl ?? 0) >= 0 ? "+" : ""}$
-                    {Math.abs(entry.pnl ?? 0).toFixed(4)}
+                    {formatPnl(entry.pnl ?? 0)}
                   </span>
                 )}
 

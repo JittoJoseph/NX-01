@@ -2,6 +2,7 @@
 
 import type { SimulatedTrade } from "@/lib/types";
 import { MARKET_WINDOW_LABELS, type MarketWindow } from "@/lib/types";
+import { formatPnl } from "@/lib/utils";
 import {
   Dialog,
   DialogContent,
@@ -248,7 +249,7 @@ export function TradeDetailPopup({
                             : "text-muted-foreground"
                       }
                     >
-                      {pnl >= 0 ? "+" : ""}${pnl.toFixed(4)}
+                      {formatPnl(pnl)}
                     </span>
                   }
                 />

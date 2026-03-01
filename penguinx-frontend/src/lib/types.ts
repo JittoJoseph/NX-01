@@ -311,8 +311,6 @@ export interface WsMessage {
 // UI helper types
 // ============================================
 
-export type Direction = "up" | "down" | "flat";
-
 export type MarketWindow = "5M" | "15M" | "1H" | "4H" | "1D";
 
 export const MARKET_WINDOW_LABELS: Record<MarketWindow, string> = {

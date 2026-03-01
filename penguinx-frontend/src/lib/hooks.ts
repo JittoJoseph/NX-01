@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { getApiClient, getWsClient } from "./api-client";
+import { formatPnl } from "./utils";
 import type {
   SimulatedTrade,
   SystemStats,
@@ -228,50 +229,6 @@ export function useActiveMarkets() {
   }, [fetchMarkets]);
 
   return { markets, loading, error, refetch: fetchMarkets };
-}
-
-/**
- * Hook to fetch portfolio performance with time period selection.
- */
-export function usePerformance(period: "1D" | "1W" | "1M" | "ALL" = "1D") {
-  const [performance, setPerformance] = useState<PerformanceMetrics | null>(
-    null,
-  );
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<Error | null>(null);
-
-  const fetchPerformance = useCallback(
-    async (isRefresh = false) => {
-      try {
-        if (isRefresh) {
-          setRefreshing(true);
-        } else {
-          setLoading(true);
-        }
-        const api = getApiClient();
-        const response = await api.getPerformance(period);
-        setPerformance(response);
-        setError(null);
-      } catch (err) {
-        setError(err as Error);
-      } finally {
-        setLoading(false);
-        setRefreshing(false);
-      }
-    },
-    [period],
-  );
-
-  useEffect(() => {
-    fetchPerformance();
-  }, [fetchPerformance]);
-
-  const refetch = useCallback(() => {
-    fetchPerformance(true);
-  }, [fetchPerformance]);
-
-  return { performance, loading, refreshing, error, refetch };
 }
 
 /**
@@ -543,35 +500,6 @@ export function useAnimatedNumber(
 }
 
 /**
- * Hook to fetch audit logs.
- */
-export function useAuditLogs(limit?: number) {
-  const [logs, setLogs] = useState<AuditLog[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error | null>(null);
-
-  const fetchLogs = useCallback(async () => {
-    try {
-      setLoading(true);
-      const api = getApiClient();
-      const response = await api.getAuditLogs({ limit });
-      setLogs(response);
-      setError(null);
-    } catch (err) {
-      setError(err as Error);
-    } finally {
-      setLoading(false);
-    }
-  }, [limit]);
-
-  useEffect(() => {
-    fetchLogs();
-  }, [fetchLogs]);
-
-  return { logs, loading, error, refetch: fetchLogs };
-}
-
-/**
  * Hook for WebSocket connection status.
  * Sends a JSON ping to the backend every 15 s; isConnected flips to true
  * only after receiving a pong, and resets to false if none arrives within 20 s.
@@ -808,10 +736,7 @@ export function useActivityLog() {
 
       const kind: ActivityEntry["kind"] = isWin ? "TRADE_WIN" : "TRADE_LOSS";
       const outcome = trade?.outcomeLabel ?? "??";
-      const pnlStr =
-        pnl !== undefined
-          ? ` PnL: ${pnl >= 0 ? "+" : ""}$${Math.abs(pnl).toFixed(4)}`
-          : "";
+      const pnlStr = pnl !== undefined ? ` PnL: ${formatPnl(pnl)}` : "";
 
       const entry: ActivityEntry = {
         id,

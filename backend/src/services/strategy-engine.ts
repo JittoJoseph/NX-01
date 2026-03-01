@@ -137,7 +137,6 @@ export class StrategyEngine extends EventEmitter {
       return;
     }
 
-
     if (!btcPriceData || btcPriceData.price <= 0) {
       logger.debug({ tokenId }, "Skipping: no BTC price");
       return;
@@ -178,7 +177,13 @@ export class StrategyEngine extends EventEmitter {
     // Positive oracleLeadUsd = BTC above windowStart (favours Up).
     // Negative oracleLeadUsd = BTC below windowStart (favours Down).
     const oracleLeadUsd = btcPriceData.price - market.targetPrice;
-    if (this.checkOracleFilter(market.outcomeLabel, oracleLeadUsd, config.strategy.minOracleLeadUsd)) {
+    if (
+      this.checkOracleFilter(
+        market.outcomeLabel,
+        oracleLeadUsd,
+        config.strategy.minOracleLeadUsd,
+      )
+    ) {
       return;
     }
     // ─────────────────────────────────────────────────────────────────────────
@@ -194,7 +199,7 @@ export class StrategyEngine extends EventEmitter {
       bestAsk,
       bestBid,
       btcPrice: btcPriceData.price,
-      btcTargetPrice: market.targetPrice ?? 0,
+      btcTargetPrice: market.targetPrice,
       btcDistanceUsd,
       oracleLeadUsd,
       secondsToEnd,

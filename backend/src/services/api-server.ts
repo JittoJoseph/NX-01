@@ -132,6 +132,17 @@ export class ApiServer {
     next();
   }
 
+  /** Reusable admin auth guard — checks Bearer token against config */
+  private adminAuth(req: Request, res: Response, next: NextFunction): void {
+    const config = getConfig();
+    const password = req.headers.authorization?.replace("Bearer ", "");
+    if (!password || password !== config.admin.password) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    next();
+  }
+
   private setupRoutes(): void {
     // Health / ping
     this.app.get("/ping", (_req, res) => res.json({ message: "pong" }));
@@ -324,67 +335,62 @@ export class ApiServer {
     });
 
     // Admin: wipe — clears all trade data and resets portfolio
-    this.app.delete("/api/admin/wipe", async (req: Request, res: Response) => {
-      try {
-        const config = getConfig();
-        const password = req.headers.authorization?.replace("Bearer ", "");
-        if (!password || password !== config.admin.password) {
-          res.status(401).json({ error: "Unauthorized" });
-          return;
+    this.app.delete(
+      "/api/admin/wipe",
+      (req, res, next) => this.adminAuth(req, res, next),
+      async (req: Request, res: Response) => {
+        try {
+          const config = getConfig();
+
+          // Pause the orchestrator first — stops scanner, halts new trades
+          const orchestrator = getMarketOrchestrator();
+          orchestrator.pause();
+
+          await wipeAndResetPortfolio(config.portfolio.startingCapital);
+
+          // Also clear markets
+          const db = getDb();
+          await db.delete(schema.markets);
+
+          logger.warn("Database wiped and portfolio reset via admin endpoint");
+          res.json({
+            success: true,
+            message:
+              "All data wiped, portfolio reset. Use POST /api/admin/resume to resume trading.",
+          });
+        } catch (error) {
+          logger.error({ error }, "Wipe error");
+          res.status(500).json({ error: "Wipe failed" });
         }
-
-        // Pause the orchestrator first — stops scanner, halts new trades
-        const orchestrator = getMarketOrchestrator();
-        orchestrator.pause();
-
-        await wipeAndResetPortfolio(config.portfolio.startingCapital);
-
-        // Also clear markets
-        const db = getDb();
-        await db.delete(schema.markets);
-
-        logger.warn("Database wiped and portfolio reset via admin endpoint");
-        res.json({
-          success: true,
-          message:
-            "All data wiped, portfolio reset. Use POST /api/admin/resume to resume trading.",
-        });
-      } catch (error) {
-        logger.error({ error }, "Wipe error");
-        res.status(500).json({ error: "Wipe failed" });
-      }
-    });
+      },
+    );
 
     // Admin: pause — stop new trades, keep existing positions tracked
-    this.app.post("/api/admin/pause", (req: Request, res: Response) => {
-      const config = getConfig();
-      const password = req.headers.authorization?.replace("Bearer ", "");
-      if (!password || password !== config.admin.password) {
-        res.status(401).json({ error: "Unauthorized" });
-        return;
-      }
-      const orchestrator = getMarketOrchestrator();
-      orchestrator.pause();
-      res.json({ success: true, paused: true });
-    });
+    this.app.post(
+      "/api/admin/pause",
+      (req, res, next) => this.adminAuth(req, res, next),
+      (_req: Request, res: Response) => {
+        const orchestrator = getMarketOrchestrator();
+        orchestrator.pause();
+        res.json({ success: true, paused: true });
+      },
+    );
 
     // Admin: resume — resume trading after a pause
-    this.app.post("/api/admin/resume", async (req: Request, res: Response) => {
-      try {
-        const config = getConfig();
-        const password = req.headers.authorization?.replace("Bearer ", "");
-        if (!password || password !== config.admin.password) {
-          res.status(401).json({ error: "Unauthorized" });
-          return;
+    this.app.post(
+      "/api/admin/resume",
+      (req, res, next) => this.adminAuth(req, res, next),
+      async (_req: Request, res: Response) => {
+        try {
+          const orchestrator = getMarketOrchestrator();
+          await orchestrator.resume();
+          res.json({ success: true, paused: false });
+        } catch (error) {
+          logger.error({ error }, "Resume error");
+          res.status(500).json({ error: "Resume failed" });
         }
-        const orchestrator = getMarketOrchestrator();
-        await orchestrator.resume();
-        res.json({ success: true, paused: false });
-      } catch (error) {
-        logger.error({ error }, "Resume error");
-        res.status(500).json({ error: "Resume failed" });
-      }
-    });
+      },
+    );
 
     // Portfolio state
     this.app.get("/api/portfolio", async (_req: Request, res: Response) => {

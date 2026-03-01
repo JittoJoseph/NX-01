@@ -60,6 +60,10 @@ export class BtcPriceWatcher extends EventEmitter {
   /** How often we check for staleness */
   private static readonly STALE_CHECK_INTERVAL_MS = 10_000;
 
+  /** Only prune the history buffer every N ticks to reduce GC pressure */
+  private static readonly PRUNE_INTERVAL_TICKS = 60;
+  private ticksSinceLastPrune = 0;
+
   start(): void {
     if (this.running) return;
     this.running = true;
@@ -109,19 +113,28 @@ export class BtcPriceWatcher extends EventEmitter {
     return this.getPriceAgeMs() < BtcPriceWatcher.STALE_THRESHOLD_MS;
   }
 
-  /** Last known BTC/USD price at or before `targetMs` (wall-clock ms). */
+  /** Last known BTC/USD price at or before `targetMs` (wall-clock ms).
+   *  Uses binary search — history is sorted ascending by insertion time. */
   getPriceAt(targetMs: number): number | null {
-    // Find the most recent price at or before targetMs
-    let best: { price: number; timestamp: number } | null = null;
-    for (const entry of this.priceHistory) {
-      if (entry.timestamp <= targetMs) {
-        if (best === null || entry.timestamp > best.timestamp) {
-          best = entry;
-        }
+    const h = this.priceHistory;
+    if (h.length === 0) return null;
+
+    // Binary search for the rightmost entry with timestamp <= targetMs
+    let lo = 0;
+    let hi = h.length - 1;
+    let bestIdx = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >>> 1;
+      if (h[mid]!.timestamp <= targetMs) {
+        bestIdx = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
       }
     }
 
-    if (best) {
+    if (bestIdx >= 0) {
+      const best = h[bestIdx]!;
       logger.debug(
         {
           targetMs,
@@ -131,18 +144,18 @@ export class BtcPriceWatcher extends EventEmitter {
         },
         "Found historical BTC price",
       );
-    } else {
-      logger.debug(
-        {
-          targetMs,
-          historySize: this.priceHistory.length,
-          oldestTs: this.priceHistory[0]?.timestamp,
-        },
-        "No historical BTC price found for target time",
-      );
+      return best.price;
     }
 
-    return best?.price ?? null;
+    logger.debug(
+      {
+        targetMs,
+        historySize: h.length,
+        oldestTs: h[0]?.timestamp,
+      },
+      "No historical BTC price found for target time",
+    );
+    return null;
   }
 
   /**
@@ -218,15 +231,20 @@ export class BtcPriceWatcher extends EventEmitter {
     this.lastPriceReceivedMs = timestamp; // Update staleness watchdog reference
     this.priceHistory.push({ price, timestamp });
 
-    const cutoff = Date.now() - BtcPriceWatcher.HISTORY_TTL_MS;
-    let pruneIdx = 0;
-    while (
-      pruneIdx < this.priceHistory.length &&
-      this.priceHistory[pruneIdx]!.timestamp < cutoff
-    ) {
-      pruneIdx++;
+    // Only prune every N ticks to avoid allocating a new array on every single tick
+    this.ticksSinceLastPrune++;
+    if (this.ticksSinceLastPrune >= BtcPriceWatcher.PRUNE_INTERVAL_TICKS) {
+      this.ticksSinceLastPrune = 0;
+      const cutoff = Date.now() - BtcPriceWatcher.HISTORY_TTL_MS;
+      let pruneIdx = 0;
+      while (
+        pruneIdx < this.priceHistory.length &&
+        this.priceHistory[pruneIdx]!.timestamp < cutoff
+      ) {
+        pruneIdx++;
+      }
+      if (pruneIdx > 0) this.priceHistory = this.priceHistory.slice(pruneIdx);
     }
-    if (pruneIdx > 0) this.priceHistory = this.priceHistory.slice(pruneIdx);
 
     this.emit("btcPriceUpdate", { price, timestamp } satisfies BtcPriceData);
   }

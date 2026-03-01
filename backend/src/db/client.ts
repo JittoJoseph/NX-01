@@ -92,64 +92,6 @@ export async function insertMarketIfNew(
 }
 
 /**
- * Full upsert — only used when we actually need to update a market row
- * (e.g. during resolution or admin operations).
- */
-export async function upsertMarket(
-  id: string,
-  data: {
-    conditionId?: string;
-    slug?: string;
-    question?: string;
-    clobTokenIds?: string[];
-    outcomes?: string[];
-    windowType: string;
-    category: string;
-    endDate?: string | null;
-    targetPrice?: number | null;
-    active?: boolean;
-    metadata?: unknown;
-  },
-) {
-  const database = getDb();
-
-  const existing = await database
-    .select()
-    .from(schema.markets)
-    .where(eq(schema.markets.id, id))
-    .limit(1);
-
-  const record = {
-    conditionId: data.conditionId || null,
-    slug: data.slug || null,
-    question: data.question || null,
-    clobTokenIds: data.clobTokenIds as any,
-    outcomes: data.outcomes as any,
-    windowType: data.windowType,
-    category: data.category,
-    endDate: data.endDate || null,
-    targetPrice: data.targetPrice?.toString() ?? null,
-    active: data.active ?? true,
-    metadata: data.metadata as any,
-  };
-
-  if (existing.length > 0) {
-    const result = await database
-      .update(schema.markets)
-      .set({ ...record, lastFetchedAt: new Date(), updatedAt: new Date() })
-      .where(eq(schema.markets.id, id))
-      .returning();
-    return result[0];
-  } else {
-    const result = await database
-      .insert(schema.markets)
-      .values({ id, ...record })
-      .returning();
-    return result[0];
-  }
-}
-
-/**
  * Load open trades with their market data in a single query (JOIN).
  * Avoids N+1 queries during startup.
  */

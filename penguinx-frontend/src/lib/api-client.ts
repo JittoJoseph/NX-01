@@ -76,10 +76,6 @@ export class ApiClient {
     return response.json();
   }
 
-  async getActiveMarkets(): Promise<DiscoveredMarket[]> {
-    return this.getMarkets();
-  }
-
   async getMarkets(): Promise<DiscoveredMarket[]> {
     return fetchWithRetry(`${this.baseUrl}/api/markets`);
   }

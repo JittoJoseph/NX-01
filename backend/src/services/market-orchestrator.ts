@@ -45,6 +45,7 @@ const logger = createModuleLogger("market-orchestrator");
 /** Tracks an active market through its lifecycle */
 interface ActiveMarketState {
   marketId: string;
+  conditionId: string | null;
   yesTokenId: string;
   noTokenId: string;
   question: string;
@@ -101,7 +102,13 @@ export class MarketOrchestrator extends EventEmitter {
   private activeMarkets: Map<string, ActiveMarketState> = new Map();
   /** conditionId → marketId for O(1) lookup on WS market_resolved events */
   private conditionIdMap: Map<string, string> = new Map();
+  /** tokenId → marketId reverse index for O(1) lookup on every WS price tick */
+  private tokenToMarket: Map<string, string> = new Map();
   private openPositions: Map<string, OpenPosition> = new Map();
+  /** marketId → Set<tradeId> for O(1) "has open positions?" checks */
+  private positionsByMarket: Map<string, Set<string>> = new Map();
+  /** tokenId → Set<tradeId> for O(1) position lookup on price ticks & stop-loss */
+  private positionsByToken: Map<string, Set<string>> = new Map();
   /** tokenIds currently being processed by onOpportunity — blocks concurrent duplicate executions */
   private inFlightTokenIds: Set<string> = new Set();
   /** marketIds that still need btcPriceAtWindowStart resolved — used to skip the fill loop when nothing is pending */
@@ -109,6 +116,8 @@ export class MarketOrchestrator extends EventEmitter {
   private resolutionTimers: Map<string, ReturnType<typeof setInterval>> =
     new Map();
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
+  /** Cached from config at start() — never changes at runtime */
+  private windowDurationMs = 5 * 60_000;
 
   private running = false;
   private paused = false;
@@ -129,6 +138,8 @@ export class MarketOrchestrator extends EventEmitter {
     this.running = true;
 
     const config = getConfig();
+    this.windowDurationMs =
+      WINDOW_CONFIGS[config.strategy.marketWindow]?.durationMs ?? 5 * 60_000;
     const windowLabel = WINDOW_CONFIGS[config.strategy.marketWindow].label;
 
     // Initialise portfolio (creates DB row on first run, reloads on restart)
@@ -253,17 +264,12 @@ export class MarketOrchestrator extends EventEmitter {
 
   getLiveMarkets() {
     const now = Date.now();
-    const windowDurationMs =
-      WINDOW_CONFIGS[getConfig().strategy.marketWindow]?.durationMs ??
-      5 * 60_000;
     return Array.from(this.activeMarkets.values())
       .filter((m) => !m.resolved)
       .sort((a, b) => a.endDate.getTime() - b.endDate.getTime())
       .map((m) => {
-        const hasPosition = Array.from(this.openPositions.values()).some(
-          (p) => p.marketId === m.marketId,
-        );
-        const windowStartMs = m.endDate.getTime() - windowDurationMs;
+        const hasPosition = this.hasOpenPositionsForMarket(m.marketId);
+        const windowStartMs = m.endDate.getTime() - this.windowDurationMs;
         // Three-state status:
         //   UPCOMING  — window has not yet opened (price to beat unknown)
         //   ACTIVE    — window is currently open (trading live)
@@ -302,6 +308,68 @@ export class MarketOrchestrator extends EventEmitter {
       total += pos.actualCost;
     }
     return total;
+  }
+
+  // ── Position index helpers ──────────────────────────────────────────────────
+
+  /** Add a position and update all secondary indexes */
+  private trackPosition(pos: OpenPosition): void {
+    this.openPositions.set(pos.tradeId, pos);
+
+    // marketId → tradeIds
+    let byMarket = this.positionsByMarket.get(pos.marketId);
+    if (!byMarket) {
+      byMarket = new Set();
+      this.positionsByMarket.set(pos.marketId, byMarket);
+    }
+    byMarket.add(pos.tradeId);
+
+    // tokenId → tradeIds
+    let byToken = this.positionsByToken.get(pos.tokenId);
+    if (!byToken) {
+      byToken = new Set();
+      this.positionsByToken.set(pos.tokenId, byToken);
+    }
+    byToken.add(pos.tradeId);
+
+    this.strategyEngine.setOpenPositionCount(this.openPositions.size);
+  }
+
+  /** Remove a position and update all secondary indexes */
+  private untrackPosition(tradeId: string): void {
+    const pos = this.openPositions.get(tradeId);
+    if (!pos) return;
+    this.openPositions.delete(tradeId);
+
+    const byMarket = this.positionsByMarket.get(pos.marketId);
+    if (byMarket) {
+      byMarket.delete(tradeId);
+      if (byMarket.size === 0) this.positionsByMarket.delete(pos.marketId);
+    }
+
+    const byToken = this.positionsByToken.get(pos.tokenId);
+    if (byToken) {
+      byToken.delete(tradeId);
+      if (byToken.size === 0) this.positionsByToken.delete(pos.tokenId);
+    }
+
+    this.strategyEngine.setOpenPositionCount(this.openPositions.size);
+  }
+
+  /** O(1) check: does this market have any open positions? */
+  private hasOpenPositionsForMarket(marketId: string): boolean {
+    const set = this.positionsByMarket.get(marketId);
+    return set !== undefined && set.size > 0;
+  }
+
+  /** Register a new market state and update all secondary indexes */
+  private registerMarketState(state: ActiveMarketState): void {
+    this.activeMarkets.set(state.marketId, state);
+    this.tokenToMarket.set(state.yesTokenId, state.marketId);
+    this.tokenToMarket.set(state.noTokenId, state.marketId);
+    if (state.conditionId) {
+      this.conditionIdMap.set(state.conditionId, state.marketId);
+    }
   }
 
   private wireEvents(): void {
@@ -371,9 +439,6 @@ export class MarketOrchestrator extends EventEmitter {
     if (this.pendingBtcFills.size === 0) return;
 
     const nowMs = Date.now();
-    const windowDurationMs =
-      WINDOW_CONFIGS[getConfig().strategy.marketWindow]?.durationMs ??
-      5 * 60_000;
 
     for (const marketId of this.pendingBtcFills) {
       const state = this.activeMarkets.get(marketId);
@@ -383,7 +448,7 @@ export class MarketOrchestrator extends EventEmitter {
         continue;
       }
 
-      const windowStartMs = state.endDate.getTime() - windowDurationMs;
+      const windowStartMs = state.endDate.getTime() - this.windowDurationMs;
       if (nowMs < windowStartMs) continue; // window not open yet — wait
 
       let resolved: number | null = null;
@@ -464,11 +529,8 @@ export class MarketOrchestrator extends EventEmitter {
     }
 
     // Pre-fill btcPriceAtWindowStart if the window is already open.
-    // If not, tryFillBtcWindowStart() will set it on the next CLOB/BTC tick.
-    const windowDurationMs =
-      WINDOW_CONFIGS[getConfig().strategy.marketWindow]?.durationMs ??
-      5 * 60_000;
-    const windowStartMs = endDate.getTime() - windowDurationMs;
+    // If not, tryFillBtcWindowStart() will set it on the next BTC tick.
+    const windowStartMs = endDate.getTime() - this.windowDurationMs;
     const btcPriceAtWindowStart =
       windowStartMs <= Date.now()
         ? (this.btcWatcher.getPriceAt(windowStartMs) ??
@@ -478,6 +540,7 @@ export class MarketOrchestrator extends EventEmitter {
 
     const state: ActiveMarketState = {
       marketId: market.id,
+      conditionId: market.conditionId ?? null,
       yesTokenId: tokenIds[0]!,
       noTokenId: tokenIds[1]!,
       question: market.question ?? "",
@@ -491,17 +554,12 @@ export class MarketOrchestrator extends EventEmitter {
       resolved: false,
     };
 
-    this.activeMarkets.set(market.id, state);
+    this.registerMarketState(state);
     // Only queue for fill if the window-start price wasn't resolved inline above.
     if (state.btcPriceAtWindowStart === null) {
       this.pendingBtcFills.add(market.id);
     }
-    this.tryFillBtcWindowStart();
-
-    // Build conditionId → marketId lookup for WS resolution events.
-    if (market.conditionId) {
-      this.conditionIdMap.set(market.conditionId, market.id);
-    }
+    // Don't call tryFillBtcWindowStart() here — the next BTC tick will handle it.
 
     // Register both tokens with the strategy engine.
     // effectiveTargetPrice is null for relative Up/Down markets until tryFillBtcWindowStart sets it.
@@ -542,30 +600,25 @@ export class MarketOrchestrator extends EventEmitter {
     bestBid: number,
     bestAsk: number,
   ): void {
-    // Update cached price for this token — skip if the market window has ended.
-    // After window close, Polymarket CLOB reports ~$0.50 (undecided state) which
-    // would show misleading unrealised PnL while we wait for oracle settlement.
-    for (const state of this.activeMarkets.values()) {
-      if (state.yesTokenId === tokenId || state.noTokenId === tokenId) {
-        if (state.endDate <= new Date()) {
-          // Market window ended — freeze prices until trade is settled
-          break;
-        }
+    // O(1) lookup via reverse index
+    const marketId = this.tokenToMarket.get(tokenId);
+    if (marketId) {
+      const state = this.activeMarkets.get(marketId);
+      if (state && state.endDate > new Date()) {
         const mid = (bestBid + bestAsk) / 2;
-        state.lastPrices[tokenId] = {
-          bid: bestBid,
-          ask: bestAsk,
-          mid,
-        };
-        // Track lowest bestBid for every open position on this token.
-        // bestBid is the same value that triggers stop-loss, so tracking it
-        // here lets us later calibrate the stop-loss threshold from real data.
-        for (const pos of this.openPositions.values()) {
-          if (pos.tokenId === tokenId && bestBid < pos.minPriceDuringPosition) {
-            pos.minPriceDuringPosition = bestBid;
-          }
+        state.lastPrices[tokenId] = { bid: bestBid, ask: bestAsk, mid };
+      }
+      // else: market window ended — freeze prices until trade is settled
+    }
+
+    // Track lowest bestBid for open positions on this token (O(1) index lookup)
+    const tradeIds = this.positionsByToken.get(tokenId);
+    if (tradeIds) {
+      for (const tradeId of tradeIds) {
+        const pos = this.openPositions.get(tradeId);
+        if (pos && bestBid < pos.minPriceDuringPosition) {
+          pos.minPriceDuringPosition = bestBid;
         }
-        break;
       }
     }
 
@@ -586,13 +639,6 @@ export class MarketOrchestrator extends EventEmitter {
     );
 
     this.checkStopLoss(tokenId, bestBid);
-  }
-
-  /**
-   * Handle full orderbook snapshots (used on-demand during trade execution, not cached).
-   */
-  private onOrderbookUpdate(_ev: OrderbookUpdateEvent): void {
-    // Intentionally empty — orderbook is fetched on-demand via REST, not streamed
   }
 
   /**
@@ -765,7 +811,7 @@ export class MarketOrchestrator extends EventEmitter {
 
       // Track open position
       const market = this.activeMarkets.get(opp.marketId);
-      this.openPositions.set(tradeId, {
+      this.trackPosition({
         tradeId,
         marketId: opp.marketId,
         tokenId: opp.tokenId,
@@ -778,7 +824,6 @@ export class MarketOrchestrator extends EventEmitter {
         minPriceDuringPosition: execution.averagePrice, // start at entry
       });
 
-      this.strategyEngine.setOpenPositionCount(this.openPositions.size);
       this.scheduleResolutionMonitor(opp.marketId);
 
       await logAudit(
@@ -859,8 +904,12 @@ export class MarketOrchestrator extends EventEmitter {
     if (!config.strategy.stopLossEnabled) return;
 
     const now = Date.now();
-    for (const [tradeId, pos] of this.openPositions) {
-      if (pos.tokenId !== tokenId) continue;
+    const tradeIds = this.positionsByToken.get(tokenId);
+    if (!tradeIds) return;
+
+    for (const tradeId of tradeIds) {
+      const pos = this.openPositions.get(tradeId);
+      if (!pos) continue;
       if (pos.stopLossTriggered) continue;
       // 🔑 Critical guard: stop-loss must ONLY fire while the market window is open.
       // After endDate, prices drift to ~0.50 during settlement — this would
@@ -948,8 +997,7 @@ export class MarketOrchestrator extends EventEmitter {
         exitPrice.toFixed(6),
         pos.minPriceDuringPosition.toFixed(8),
       );
-      this.openPositions.delete(tradeId);
-      this.strategyEngine.setOpenPositionCount(this.openPositions.size);
+      this.untrackPosition(tradeId);
 
       await logAudit(
         "warn",
@@ -1023,9 +1071,7 @@ export class MarketOrchestrator extends EventEmitter {
       }
 
       // Check if any positions still exist for this market
-      const hasPositions = Array.from(this.openPositions.values()).some(
-        (p) => p.marketId === marketId,
-      );
+      const hasPositions = this.hasOpenPositionsForMarket(marketId);
       if (!hasPositions) {
         clearTimeout(timerId);
         this.resolutionTimers.delete(marketId);
@@ -1156,7 +1202,7 @@ export class MarketOrchestrator extends EventEmitter {
         },
       );
 
-      this.openPositions.delete(tradeId);
+      this.untrackPosition(tradeId);
 
       logger.info(
         {
@@ -1177,13 +1223,8 @@ export class MarketOrchestrator extends EventEmitter {
       });
     }
 
-    // Update strategy engine position count
-    this.strategyEngine.setOpenPositionCount(this.openPositions.size);
-
     // Only clean up if no more open positions reference this market
-    const hasRemainingPositions = Array.from(this.openPositions.values()).some(
-      (p) => p.marketId === marketId,
-    );
+    const hasRemainingPositions = this.hasOpenPositionsForMarket(marketId);
     if (!hasRemainingPositions) {
       this.cleanupMarket(marketId);
     }
@@ -1219,7 +1260,7 @@ export class MarketOrchestrator extends EventEmitter {
         "0",
         pos.minPriceDuringPosition.toFixed(8),
       );
-      this.openPositions.delete(tradeId);
+      this.untrackPosition(tradeId);
 
       await logAudit(
         "warn",
@@ -1241,8 +1282,6 @@ export class MarketOrchestrator extends EventEmitter {
         trade: null,
       });
     }
-
-    this.strategyEngine.setOpenPositionCount(this.openPositions.size);
   }
 
   /**
@@ -1252,7 +1291,7 @@ export class MarketOrchestrator extends EventEmitter {
     const rows = await loadOpenTradesWithMarkets();
 
     for (const { trade, marketEndDate } of rows) {
-      this.openPositions.set(trade.id, {
+      this.trackPosition({
         tradeId: trade.id,
         marketId: trade.marketId ?? "",
         tokenId: trade.tokenId ?? "",
@@ -1271,8 +1310,6 @@ export class MarketOrchestrator extends EventEmitter {
       // Set up resolution monitoring for existing positions
       if (trade.marketId) this.scheduleResolutionMonitor(trade.marketId);
     }
-
-    this.strategyEngine.setOpenPositionCount(this.openPositions.size);
 
     if (rows.length > 0) {
       logger.info(
@@ -1333,9 +1370,7 @@ export class MarketOrchestrator extends EventEmitter {
       const targetPrice = row.targetPrice ? parseFloat(row.targetPrice) : null;
 
       // Check if this market has open positions
-      const hasOpenPositions = Array.from(this.openPositions.values()).some(
-        (p) => p.marketId === row.id,
-      );
+      const hasOpenPositions = this.hasOpenPositionsForMarket(row.id);
 
       // Skip markets that ended more than 30 minutes ago and have no open positions
       const thirtyMinutesAgo = Date.now() - 30 * 60 * 1000;
@@ -1345,6 +1380,7 @@ export class MarketOrchestrator extends EventEmitter {
 
       const state: ActiveMarketState = {
         marketId: row.id,
+        conditionId: row.conditionId ?? null,
         yesTokenId: tokenIds[0]!,
         noTokenId: tokenIds[1]!,
         question: row.question ?? "",
@@ -1358,13 +1394,8 @@ export class MarketOrchestrator extends EventEmitter {
         resolved: false,
       };
 
-      this.activeMarkets.set(row.id, state);
+      this.registerMarketState(state);
       this.pendingBtcFills.add(row.id);
-
-      // Build conditionId → marketId lookup for WS resolution events
-      if (row.conditionId) {
-        this.conditionIdMap.set(row.conditionId, row.id);
-      }
 
       // Register both tokens with the strategy engine
       const effectiveTargetPrice = targetPrice ?? null; // btcPriceAtWindowStart will be set later
@@ -1466,9 +1497,7 @@ export class MarketOrchestrator extends EventEmitter {
       // Keep active markets
       if (state.endDate.getTime() > now) continue;
       // Keep ended markets that have open positions
-      const hasPosition = Array.from(this.openPositions.values()).some(
-        (p) => p.marketId === marketId,
-      );
+      const hasPosition = this.hasOpenPositionsForMarket(marketId);
       if (hasPosition) continue;
       // Expired + no positions → safe to clean up
       toClean.push(marketId);
@@ -1494,10 +1523,7 @@ export class MarketOrchestrator extends EventEmitter {
     if (!state) return;
 
     // Safety: never clean up a market that still has open positions
-    const hasPositions = Array.from(this.openPositions.values()).some(
-      (p) => p.marketId === marketId,
-    );
-    if (hasPositions) return;
+    if (this.hasOpenPositionsForMarket(marketId)) return;
 
     // Unsubscribe from WS
     if (state.subscribedWs) {
@@ -1508,13 +1534,14 @@ export class MarketOrchestrator extends EventEmitter {
     this.strategyEngine.unregisterMarket(state.yesTokenId);
     this.strategyEngine.unregisterMarket(state.noTokenId);
 
-    // Remove from conditionId map
-    for (const [cid, mid] of this.conditionIdMap) {
-      if (mid === marketId) {
-        this.conditionIdMap.delete(cid);
-        break;
-      }
+    // Remove from conditionId map (O(1) via stored conditionId)
+    if (state.conditionId) {
+      this.conditionIdMap.delete(state.conditionId);
     }
+
+    // Remove tokenId reverse index entries
+    this.tokenToMarket.delete(state.yesTokenId);
+    this.tokenToMarket.delete(state.noTokenId);
 
     this.activeMarkets.delete(marketId);
   }

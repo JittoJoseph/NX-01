@@ -2,6 +2,7 @@
 
 import type { SimulatedTrade, LiveMarketPrice } from "@/lib/types";
 import { MARKET_WINDOW_LABELS, type MarketWindow } from "@/lib/types";
+import { pnlColor, formatPnl } from "@/lib/utils";
 
 interface TradesTableProps {
   trades: SimulatedTrade[];
@@ -128,7 +129,6 @@ export function TradesTable({
             // Realized P&L for closed trades
             const realizedPnl = parseFloat(trade.realizedPnl || "0");
             const hasPnl = isClosed && !!trade.realizedPnl;
-            const pnlPositive = realizedPnl >= 0;
 
             // P&L percentages
             const realizedPnlPct =
@@ -235,19 +235,12 @@ export function TradesTable({
                   {hasPnl ? (
                     <div className="flex flex-col items-end gap-0.5">
                       <span
-                        className={`tabular-nums font-semibold ${
-                          pnlPositive ? "text-emerald-500" : "text-red-500"
-                        }`}
+                        className={`tabular-nums font-semibold ${pnlColor(realizedPnl)}`}
                       >
-                        {pnlPositive ? "+" : "-"}$
-                        {Math.abs(realizedPnl).toFixed(4)}
+                        {formatPnl(realizedPnl)}
                       </span>
                       <span
-                        className={`text-[10px] tabular-nums ${
-                          pnlPositive
-                            ? "text-emerald-500/60"
-                            : "text-red-500/60"
-                        }`}
+                        className={`text-[10px] tabular-nums ${pnlColor(realizedPnl, "60")}`}
                       >
                         {realizedPnlPct >= 0 ? "+" : ""}
                         {realizedPnlPct.toFixed(2)}%
@@ -262,8 +255,7 @@ export function TradesTable({
                             : "text-red-400"
                         }`}
                       >
-                        {unrealizedPnl >= 0 ? "+" : "-"}$
-                        {Math.abs(unrealizedPnl).toFixed(4)}
+                        {formatPnl(unrealizedPnl)}
                       </span>
                       {unrealizedPnlPct !== null && (
                         <span

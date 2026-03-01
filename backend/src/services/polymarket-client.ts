@@ -79,40 +79,6 @@ export class PolymarketClient {
   // Gamma API — Market Discovery
   // ============================================
 
-  async getEvents(
-    options: {
-      limit?: number;
-      offset?: number;
-      closed?: boolean;
-      active?: boolean;
-      tag_slug?: string;
-      slug?: string;
-      /** ISO-8601 datetime — only return events whose endDate >= this value */
-      end_date_min?: string;
-    } = {},
-  ): Promise<GammaEvent[]> {
-    return withRetry(
-      async () => {
-        const params: Record<string, string | number | boolean> = {
-          limit: options.limit ?? 50,
-          offset: options.offset ?? 0,
-        };
-        if (options.closed !== undefined) params.closed = options.closed;
-        if (options.active !== undefined) params.active = options.active;
-        if (options.tag_slug) params.tag_slug = options.tag_slug;
-        if (options.slug) params.slug = options.slug;
-        if (options.end_date_min) params.end_date_min = options.end_date_min;
-
-        logger.debug({ params }, "Fetching events from Gamma API");
-        const response = await this.gammaApi.get("/events", { params });
-        const events = z.array(GammaEventSchema).parse(response.data);
-        logger.debug({ count: events.length }, "Fetched events");
-        return events;
-      },
-      { maxRetries: 3, retryOn: isRateLimitError },
-    );
-  }
-
   /**
    * Fetch markets from the Gamma /markets endpoint.
    * Supports slug array for deterministic lookups:

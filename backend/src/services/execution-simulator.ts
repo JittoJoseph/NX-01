@@ -8,6 +8,16 @@ import Decimal from "decimal.js";
 
 const logger = createModuleLogger("execution-simulator");
 
+/** Top-N snapshot of an orderbook for audit / display purposes. */
+function snapshotOrderbook(orderbook: Orderbook, depth = 5) {
+  return {
+    bids: orderbook.bids.slice(0, depth),
+    asks: orderbook.asks.slice(0, depth),
+    tick_size: orderbook.tick_size,
+    timestamp: orderbook.timestamp,
+  };
+}
+
 /** Result of a simulated limit order fill */
 export interface ExecutionResult {
   averagePrice: number;
@@ -130,12 +140,7 @@ export function simulateLimitBuy(
     netCost: totalCost.toNumber() + roundedFees,
     isPartialFill,
     fillDetails,
-    orderbookSnapshot: {
-      bids: orderbook.bids.slice(0, 5),
-      asks: orderbook.asks.slice(0, 5),
-      tick_size: orderbook.tick_size,
-      timestamp: orderbook.timestamp,
-    },
+    orderbookSnapshot: snapshotOrderbook(orderbook),
   };
 }
 
@@ -282,12 +287,7 @@ export function simulateLimitSell(
     netRevenue: totalRevenue.toNumber() - roundedFees,
     isPartialFill,
     fillDetails,
-    orderbookSnapshot: {
-      bids: orderbook.bids.slice(0, 5),
-      asks: orderbook.asks.slice(0, 5),
-      tick_size: orderbook.tick_size,
-      timestamp: orderbook.timestamp,
-    },
+    orderbookSnapshot: snapshotOrderbook(orderbook),
   };
 }
 
