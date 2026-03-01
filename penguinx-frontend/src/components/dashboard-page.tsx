@@ -195,6 +195,7 @@ export function DashboardPage() {
           windowLabel={windowLabel}
           refetchMarkets={refetchMarkets}
           btcPriceAtWindowStartFallback={btcPriceAtWindowStartFallback}
+          trades={trades}
         />
 
         {/* ── Two-column: Trades + Sidebar ─────────── */}
@@ -435,6 +436,7 @@ function TopDashboardSection({
   windowLabel,
   refetchMarkets,
   btcPriceAtWindowStartFallback,
+  trades,
 }: {
   stats: SystemStats | null;
   btcPrice: { price: number; timestamp: number } | null;
@@ -444,12 +446,12 @@ function TopDashboardSection({
   windowLabel: string;
   refetchMarkets: () => void;
   btcPriceAtWindowStartFallback: number | null;
+  trades: SimulatedTrade[];
 }) {
   const [period, setPeriod] = useState<"1D" | "1W" | "1M" | "ALL">("ALL");
   const { performance } = usePerformanceRealtime(period);
 
   // Get live unrealized PnL from open trades and current market prices
-  const { trades } = useTrades("OPEN");
   const liveMarkets = useLiveMarkets();
   const liveUnrealizedPnL = useUnrealizedPnL(trades, liveMarkets);
 
