@@ -1,5 +1,5 @@
 {
-  "id": "fdb615d1-cebb-4f7b-9efc-dcbcf6613841",
+  "id": "2bc31d6b-1dc8-47c9-8ee0-30fcd36cb728",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -82,133 +82,6 @@
           "columns": [
             {
               "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.experiment_runs": {
-      "name": "experiment_runs",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "description": {
-          "name": "description",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "strategy_variant": {
-          "name": "strategy_variant",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "parameters": {
-          "name": "parameters",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "started_at": {
-          "name": "started_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "ended_at": {
-          "name": "ended_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'RUNNING'"
-        },
-        "total_trades": {
-          "name": "total_trades",
-          "type": "numeric(18, 0)",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "'0'"
-        },
-        "successful_trades": {
-          "name": "successful_trades",
-          "type": "numeric(18, 0)",
-          "primaryKey": false,
-          "notNull": false,
-          "default": "'0'"
-        },
-        "avg_realized_pnl": {
-          "name": "avg_realized_pnl",
-          "type": "numeric(18, 8)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "metadata": {
-          "name": "metadata",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "er_status_idx": {
-          "name": "er_status_idx",
-          "columns": [
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "er_started_at_idx": {
-          "name": "er_started_at_idx",
-          "columns": [
-            {
-              "expression": "started_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -395,6 +268,52 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.portfolio": {
+      "name": "portfolio",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "default": 1
+        },
+        "initial_capital": {
+          "name": "initial_capital",
+          "type": "numeric(18, 8)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "cash_balance": {
+          "name": "cash_balance",
+          "type": "numeric(18, 8)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.simulated_trades": {
       "name": "simulated_trades",
       "schema": "",
@@ -404,12 +323,6 @@
           "type": "text",
           "primaryKey": true,
           "notNull": true
-        },
-        "experiment_id": {
-          "name": "experiment_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         },
         "market_id": {
           "name": "market_id",
@@ -473,12 +386,17 @@
           "primaryKey": false,
           "notNull": true
         },
-        "simulated_usd_amount": {
-          "name": "simulated_usd_amount",
+        "position_budget": {
+          "name": "position_budget",
           "type": "numeric(18, 8)",
           "primaryKey": false,
-          "notNull": true,
-          "default": "'1'"
+          "notNull": true
+        },
+        "actual_cost": {
+          "name": "actual_cost",
+          "type": "numeric(18, 8)",
+          "primaryKey": false,
+          "notNull": true
         },
         "entry_fees": {
           "name": "entry_fees",
@@ -486,12 +404,6 @@
           "primaryKey": false,
           "notNull": false,
           "default": "'0'"
-        },
-        "fee_rate_bps": {
-          "name": "fee_rate_bps",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
         },
         "fill_status": {
           "name": "fill_status",
@@ -514,6 +426,18 @@
         },
         "btc_distance_usd": {
           "name": "btc_distance_usd",
+          "type": "numeric(10, 4)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "momentum_direction": {
+          "name": "momentum_direction",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "momentum_change_usd": {
+          "name": "momentum_change_usd",
           "type": "numeric(10, 4)",
           "primaryKey": false,
           "notNull": false
@@ -548,12 +472,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'OPEN'"
-        },
-        "strategy_trigger": {
-          "name": "strategy_trigger",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         },
         "orderbook_snapshot": {
           "name": "orderbook_snapshot",
@@ -618,21 +536,6 @@
           "columns": [
             {
               "expression": "entry_ts",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "st_experiment_id_idx": {
-          "name": "st_experiment_id_idx",
-          "columns": [
-            {
-              "expression": "experiment_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
