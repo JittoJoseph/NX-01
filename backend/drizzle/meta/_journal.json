@@ -8,6 +8,13 @@
       "when": 1772364554964,
       "tag": "0000_third_hex",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1772442436122,
+      "tag": "0001_gigantic_skreet",
+      "breakpoints": true
     }
   ]
 }

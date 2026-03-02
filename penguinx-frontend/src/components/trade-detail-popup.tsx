@@ -192,7 +192,6 @@ export function TradeDetailPopup({
               <Cell label="BUDGET" value={`$${budget.toFixed(4)}`} />
               <Cell label="ACTUAL COST" value={`$${actualCost.toFixed(4)}`} />
               <Cell label="ENTRY FEES" value={`$${entryFees.toFixed(6)}`} />
-              <Cell label="ORDER TYPE" value={trade.orderType || "—"} />
               <Cell
                 label="FILL STATUS"
                 value={
@@ -210,7 +209,7 @@ export function TradeDetailPopup({
                 }
               />
               {/* Min price spans full width when present */}
-              {minPrice !== null && (
+              {minPrice !== null && minPrice > 0 && minPrice < entryPrice && (
                 <div className="col-span-2 flex items-center justify-between py-2 px-4 border-t border-border/10 bg-amber-500/[0.03]">
                   <span className="text-[10px] tracking-[0.18em] text-muted-foreground/45">
                     MIN PRICE DURING WINDOW

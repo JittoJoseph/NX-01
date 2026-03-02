@@ -612,12 +612,16 @@ export class MarketOrchestrator extends EventEmitter {
     }
 
     // Track lowest bestBid for open positions on this token (O(1) index lookup)
+    // Only track during active market window (until window close)
     const tradeIds = this.positionsByToken.get(tokenId);
-    if (tradeIds) {
-      for (const tradeId of tradeIds) {
-        const pos = this.openPositions.get(tradeId);
-        if (pos && bestBid < pos.minPriceDuringPosition) {
-          pos.minPriceDuringPosition = bestBid;
+    if (tradeIds && marketId) {
+      const state = this.activeMarkets.get(marketId);
+      if (state && state.endDate > new Date()) {
+        for (const tradeId of tradeIds) {
+          const pos = this.openPositions.get(tradeId);
+          if (pos && bestBid < pos.minPriceDuringPosition) {
+            pos.minPriceDuringPosition = bestBid;
+          }
         }
       }
     }
@@ -1303,7 +1307,10 @@ export class MarketOrchestrator extends EventEmitter {
         marketEndDate: marketEndDate ? new Date(marketEndDate) : new Date(),
         // Restore from DB if saved; otherwise start at entry price
         minPriceDuringPosition: parseFloat(
-          trade.minPriceDuringPosition ?? trade.entryPrice,
+          trade.minPriceDuringPosition &&
+            parseFloat(trade.minPriceDuringPosition) > 0
+            ? trade.minPriceDuringPosition
+            : trade.entryPrice,
         ),
       });
 
