@@ -39,9 +39,9 @@ export function loadConfig(): Config {
       marketWindow: env("MARKET_WINDOW", "5M"),
       tradeFromWindowSeconds: envNum("TRADE_FROM_WINDOW_SECONDS", 60),
       entryPriceThreshold: envNum("ENTRY_PRICE_THRESHOLD", 0.94),
-      maxEntryPrice: envNum("MAX_ENTRY_PRICE", 0.97),
+      maxEntryPrice: envNum("MAX_ENTRY_PRICE", 0.98),
       maxSimultaneousPositions: envNum("MAX_SIMULTANEOUS_POSITIONS", 5),
-      minBtcDistanceUsd: envNum("MIN_BTC_DISTANCE_USD", 50),
+      minBtcDistanceUsd: envNum("MIN_BTC_DISTANCE_USD", 80),
       scanIntervalMs: envNum("SCAN_INTERVAL_MS", 60_000),
       // Stop-loss: sell if token bid drops below this price WHILE window is still open
       stopLossEnabled: envBool("STOP_LOSS_ENABLED", true),

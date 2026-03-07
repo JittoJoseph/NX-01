@@ -726,19 +726,16 @@ export class MarketOrchestrator extends EventEmitter {
       const bestAskPrice =
         sortedAsks.length > 0 ? parseFloat(sortedAsks[0]!.price) : opp.bestAsk;
 
-      // ── 2. Compute position budget (share-based minimum) ──────────
+      // ── 2. Compute position budget (sized at maxEntryPrice) ──────────
       const openPositionsValue = this.computeOpenPositionsValue();
-      const positionBudget = this.portfolioManager.computePositionBudget(
-        openPositionsValue,
-        bestAskPrice,
-      );
+      const positionBudget =
+        this.portfolioManager.computePositionBudget(openPositionsValue);
 
       if (positionBudget <= 0) {
         logger.info(
           {
             openPositionsValue,
             cash: this.portfolioManager.getCashBalance(),
-            bestAskPrice,
           },
           "Insufficient cash for minimum share count — skipping",
         );

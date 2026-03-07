@@ -17,9 +17,11 @@ const logger = createModuleLogger("portfolio-manager");
  * Tracks the simulated portfolio's cash balance and computes position sizes.
  *
  * Key rules:
- * - Position sizing = portfolioValue / slots   (not cash / slots)
+ * - Position sizing = portfolioValue / maxPositions
  * - portfolioValue = cash + sum of open positions at current price
  * - Only the *actual fill cost* (shares × avgPrice + fees) is deducted from cash
+ * - Budget is always sized at maxEntryPrice (worst-case we'd accept), so even
+ *   if entering at a lower price the budget can absorb fills up to the limit
  * - Minimum position: POLYMARKET_MIN_ORDER_SIZE shares (protocol-level = 5)
  * - Cash balance is persisted in DB so it survives restarts
  */
@@ -71,46 +73,48 @@ export class PortfolioManager {
   /**
    * Compute the budget for the next position.
    *
-   * Share-based sizing (matching Polymarket's min_order_size):
+   * Budget is sized at **maxEntryPrice** (the worst-case price we'd accept),
+   * not at the current best ask. This guarantees the budget can fill at
+   * least POLYMARKET_MIN_ORDER_SIZE shares even if every eligible ask level
+   * is right at our limit price.
+   *
+   *   maxPrice   = config.strategy.maxEntryPrice
    *   rawBudget  = portfolioValue / maxSimultaneousPositions
-   *   minBudget  = POLYMARKET_MIN_ORDER_SIZE × (bestAskPrice + fee_per_share)
-   *   budget     = max(rawBudget, minBudget)  — ensure at least min order size
+   *   minBudget  = MIN_ORDER_SIZE × (maxPrice + fee_at_maxPrice)
+   *   budget     = max(rawBudget, minBudget)
    *   if cash < minBudget → return 0 (can't afford minimum order)
    *   cap at cashBalance
    *
    * @param openPositionsValue  Sum of actualCost for all OPEN trades
-   * @param bestAskPrice        Current best ask price for the target token
    * @returns Budget in USD, or 0 if cash can't cover the minimum share count
    */
-  computePositionBudget(
-    openPositionsValue: number,
-    bestAskPrice: number,
-  ): number {
+  computePositionBudget(openPositionsValue: number): number {
     const config = getConfig();
     const minShares = POLYMARKET_MIN_ORDER_SIZE;
+    const maxPrice = config.strategy.maxEntryPrice;
     const portfolioValue = this.cashBalance.plus(openPositionsValue);
     const rawBudget = portfolioValue.div(
       config.strategy.maxSimultaneousPositions,
     );
 
-    // Cost of the minimum share count at current best ask (including taker fee)
-    const feePerShare = calculateFeePerShare(bestAskPrice);
-    const costPerShare = new Decimal(bestAskPrice).plus(feePerShare);
+    // Cost of the minimum share count at maxEntryPrice (worst case we'd accept)
+    const feePerShare = calculateFeePerShare(maxPrice);
+    const costPerShare = new Decimal(maxPrice).plus(feePerShare);
     const minBudget = costPerShare.mul(minShares);
 
     // Use whichever is larger: the equal-share slice or the minimum-shares cost
     const budget = Decimal.max(rawBudget, minBudget);
 
-    // If we can't even afford the minimum shares, skip
+    // If we can't even afford the minimum shares at worst-case price, skip
     if (this.cashBalance.lt(minBudget)) {
       logger.warn(
         {
           cash: this.cashBalance.toString(),
           minBudget: minBudget.toString(),
           minShares,
-          bestAskPrice,
+          maxEntryPrice: maxPrice,
         },
-        `Insufficient cash for ${minShares}-share minimum — skipping`,
+        `Insufficient cash for ${minShares}-share minimum at maxEntryPrice — skipping`,
       );
       return 0;
     }
