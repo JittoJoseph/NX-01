@@ -1007,6 +1007,10 @@ export class MarketOrchestrator extends EventEmitter {
         exitFees,
       );
 
+      // Classify based on actual PnL — stop-loss doesn't always mean a loss.
+      const isWin = pnl > 0;
+      const outcome = isWin ? "WIN" : "LOSS";
+
       // Add sell proceeds back to cash: shares sold × exitPrice - exitFees
       const sellProceeds = pos.entryShares * exitPrice - exitFees;
       if (sellProceeds > 0) {
@@ -1015,7 +1019,7 @@ export class MarketOrchestrator extends EventEmitter {
 
       await resolveTrade(
         tradeId,
-        "LOSS",
+        outcome,
         pnl.toFixed(6),
         exitPrice.toFixed(6),
         pos.minPriceDuringPosition.toFixed(8),
@@ -1025,7 +1029,7 @@ export class MarketOrchestrator extends EventEmitter {
       await logAudit(
         "warn",
         "STOP_LOSS",
-        `Stop-loss executed for trade ${tradeId}: bid ${triggerBid.toFixed(4)} → exit @ ${exitPrice.toFixed(4)}, PnL ${pnl.toFixed(4)}`,
+        `Stop-loss executed for trade ${tradeId}: bid ${triggerBid.toFixed(4)} → exit @ ${exitPrice.toFixed(4)}, PnL ${pnl.toFixed(4)} (${outcome})`,
         {
           tradeId,
           tokenId: pos.tokenId,
@@ -1034,6 +1038,7 @@ export class MarketOrchestrator extends EventEmitter {
           exitFees,
           triggerBid,
           pnl,
+          outcome,
         },
       );
 
@@ -1046,13 +1051,14 @@ export class MarketOrchestrator extends EventEmitter {
           exitPrice: exitPrice.toFixed(4),
           pnl: pnl.toFixed(4),
           triggerBid: triggerBid.toFixed(4),
+          classification: outcome,
         },
         "🛑 Stop-loss sell executed",
       );
 
       this.emit("tradeResolved", {
         tradeId,
-        isWin: false,
+        isWin,
         pnl,
         exitPrice,
         trade: null,
