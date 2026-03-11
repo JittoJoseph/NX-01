@@ -36,11 +36,12 @@ class BalanceManager {
   private async doRefresh(): Promise<number> {
     try {
       const { balance } = await tradingClient.getUsdcBalance();
-      this.cachedBalance = parseFloat(balance);
+      // Polymarket returns USDC.e in atomic units (6 decimals) — convert to dollars
+      this.cachedBalance = parseFloat(balance) / 1e6;
       this.lastFetchedAt = Date.now();
 
-      // Persist to DB asynchronously
-      updateLastKnownBalance(balance).catch((err) =>
+      // Persist the human-readable dollar value to DB
+      updateLastKnownBalance(this.cachedBalance.toString()).catch((err) =>
         logger.error({ error: err }, "Failed to persist balance to DB"),
       );
 
