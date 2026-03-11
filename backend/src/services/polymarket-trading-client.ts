@@ -25,7 +25,7 @@ const logger = createModuleLogger("polymarket-trading");
 class PolymarketTradingClient {
   private client: ClobClient | null = null;
   private signer: Wallet | null = null;
-  private heartbeatId = "";
+  private heartbeatId: string | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   async init(config: Config): Promise<void> {
@@ -75,7 +75,7 @@ class PolymarketTradingClient {
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
-      this.heartbeatId = "";
+      this.heartbeatId = null;
       logger.info("Heartbeat stopped");
     }
   }
@@ -85,21 +85,14 @@ class PolymarketTradingClient {
       const resp = await this.getClient().postHeartbeat(this.heartbeatId);
       this.heartbeatId = resp.heartbeat_id;
     } catch (err: unknown) {
-      // Polymarket returns 400 with the correct heartbeat_id when ours is
-      // invalid or expired. Extract it so the next call succeeds.
-      const errData = (err as { data?: { heartbeat_id?: string } })?.data;
-      if (errData?.heartbeat_id) {
-        this.heartbeatId = errData.heartbeat_id;
-        logger.warn(
-          { recoveredId: this.heartbeatId },
-          "Heartbeat ID was invalid — recovered from error response",
-        );
-      } else {
-        logger.error(
-          { error: err },
-          "Heartbeat failed — orders may be canceled",
-        );
-      }
+      // Reset to null so the next call starts a fresh heartbeat chain.
+      // Using IDs from error responses doesn't work — they're from
+      // failed/expired chains and the server rejects them too.
+      logger.warn(
+        { previousId: this.heartbeatId },
+        "Heartbeat failed — will start fresh chain on next tick",
+      );
+      this.heartbeatId = null;
     }
   }
 

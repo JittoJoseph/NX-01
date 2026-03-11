@@ -72,7 +72,12 @@ class PositionTracker {
         // Authenticate + subscribe using the documented User Channel format
         this.sendSubscription();
 
-        // User channel requires PING every 10s to stay alive
+        // User channel requires PING every 10s to stay alive.
+        // Send first PING immediately so the server sees activity
+        // before its ~10s timeout fires.
+        if (this.ws?.readyState === WebSocket.OPEN) {
+          this.ws.send("PING");
+        }
         this.pingTimer = setInterval(() => {
           if (this.ws?.readyState === WebSocket.OPEN) {
             this.ws.send("PING");

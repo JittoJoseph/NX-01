@@ -28,15 +28,35 @@ async function main(): Promise<void> {
     "Configuration loaded",
   );
 
-  // 2. Connect to database
+  // 2. Check geographic eligibility before proceeding
+  const geoResp = await fetch("https://polymarket.com/api/geoblock");
+  const geo = (await geoResp.json()) as {
+    blocked: boolean;
+    ip: string;
+    country: string;
+    region: string;
+  };
+  if (geo.blocked) {
+    logger.fatal(
+      { ip: geo.ip, country: geo.country, region: geo.region },
+      "Geographic restriction — trading not available from this location",
+    );
+    process.exit(1);
+  }
+  logger.info(
+    { ip: geo.ip, country: geo.country, region: geo.region },
+    "Geoblock check passed",
+  );
+
+  // 3. Connect to database
   await connectDatabase();
 
-  // 3. Initialize Polymarket trading client (authenticated SDK)
+  // 4. Initialize Polymarket trading client (authenticated SDK)
   await tradingClient.init(config);
   tradingClient.startHeartbeat();
   logger.info("Polymarket trading client initialized with heartbeat");
 
-  // 4. Start position tracker (User WS channel for trade updates)
+  // 5. Start position tracker (User WS channel for trade updates)
   positionTracker.init({
     apiKey: config.polymarket.apiKey,
     apiSecret: config.polymarket.apiSecret,
@@ -45,16 +65,16 @@ async function main(): Promise<void> {
   positionTracker.connect();
   logger.info("Position tracker connected to User WS channel");
 
-  // 5. Start BTC price watcher (RTDS WebSocket)
+  // 6. Start BTC price watcher (RTDS WebSocket)
   const btcWatcher = getBtcPriceWatcher();
   btcWatcher.start();
   logger.info("BTC price watcher started");
 
-  // 6. Start market orchestrator (scanner + WS + strategy + execution)
+  // 7. Start market orchestrator (scanner + WS + strategy + execution)
   const orchestrator = getMarketOrchestrator();
   await orchestrator.start();
 
-  // 7. Start API server
+  // 8. Start API server
   const apiServer = getApiServer();
   await apiServer.start();
 
