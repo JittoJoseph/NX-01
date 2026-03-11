@@ -41,7 +41,8 @@ class PolymarketTradingClient {
         secret: config.polymarket.apiSecret,
         passphrase: config.polymarket.apiPassphrase,
       },
-      SignatureType.EOA,
+      SignatureType.POLY_PROXY,
+      config.polymarket.funderAddress,
     );
 
     // Verify connectivity by fetching balance

@@ -31,6 +31,7 @@ export function loadConfig(): Config {
       apiKey: env("POLYMARKET_API_KEY"),
       apiSecret: env("POLYMARKET_API_SECRET"),
       apiPassphrase: env("POLYMARKET_API_PASSPHRASE"),
+      funderAddress: env("POLYMARKET_FUNDER_ADDRESS"),
     },
     portfolio: {
       startingCapital: envNum("STARTING_CAPITAL", 100),

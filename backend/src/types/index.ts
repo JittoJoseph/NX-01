@@ -126,6 +126,7 @@ export const ConfigSchema = z.object({
     apiKey: z.string().min(1),
     apiSecret: z.string().min(1),
     apiPassphrase: z.string().min(1),
+    funderAddress: z.string().min(1),
   }),
   portfolio: z.object({
     startingCapital: z.number().min(1).max(10_000_000),
