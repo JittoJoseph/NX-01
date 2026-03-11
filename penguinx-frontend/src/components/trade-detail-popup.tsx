@@ -1,13 +1,13 @@
 "use client";
 
-import type { SimulatedTrade } from "@/lib/types";
+import type { Trade } from "@/lib/types";
 import { MARKET_WINDOW_LABELS, type MarketWindow } from "@/lib/types";
-import { formatPnl, pnlColor } from "@/lib/utils";
+import { formatPnl, pnlColor, fmtUsd, polymarketUrl } from "@/lib/utils";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { ExternalLink, X } from "lucide-react";
 
 interface TradeDetailPopupProps {
-  trade: SimulatedTrade | null;
+  trade: Trade | null;
   open: boolean;
   onClose: () => void;
   marketSlug?: string | null;
@@ -52,17 +52,16 @@ export function TradeDetailPopup({
   const outcome = trade.exitOutcome;
   const isWin = outcome === "WIN";
 
-  const polyUrl =
-    (marketSlug ?? trade.marketSlug)
-      ? `https://polymarket.com/event/${marketSlug ?? trade.marketSlug}`
-      : `https://polymarket.com/market/${trade.marketId}`;
+  const polyUrl = polymarketUrl(
+    marketSlug ?? trade.marketSlug,
+    trade.marketId ?? "",
+  );
 
   const resolvedQuestion = marketQuestion ?? trade.marketQuestion;
 
   const returnPct = actualCost > 0 ? (pnl / actualCost) * 100 : 0;
 
-  const fmtBtc = (n: number) =>
-    `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const fmtBtc = (n: number) => fmtUsd(n, 2);
 
   /* ─── Badge colour helpers ─── */
   // exitOutcome is "WIN" or "LOSS" (STOP_LOSS is logged in audit, not stored in trade)

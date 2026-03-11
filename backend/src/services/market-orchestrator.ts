@@ -1,13 +1,13 @@
 import { EventEmitter } from "events";
 import { createModuleLogger } from "../utils/logger.js";
 import { getConfig } from "../utils/config.js";
-import { WINDOW_CONFIGS } from "../types/index.js";
+import { WINDOW_CONFIGS, DEFAULTS } from "../types/index.js";
 import {
   getDb,
-  createSimulatedTrade,
+  createTrade,
   resolveTrade,
   logAudit,
-  loadOpenTradesWithMarkets,
+  loadActiveTradesWithMarkets,
 } from "../db/client.js";
 import * as schema from "../db/schema.js";
 import { eq, and, desc, gte } from "drizzle-orm";
@@ -22,16 +22,13 @@ import {
   StrategyEngine,
   type MarketOpportunity,
 } from "./strategy-engine.js";
-import {
-  simulateLimitBuy,
-  simulateLimitSell,
-  calculateWinProfit,
-  calculateLossAmount,
-  calculateEarlyExitPnl,
-} from "./execution-simulator.js";
+import { executeBuyOrder, executeSellOrder } from "./order-executor.js";
 import { getBtcPriceWatcher, BtcPriceWatcher } from "./btc-price-watcher.js";
 import { getPolymarketClient, PolymarketClient } from "./polymarket-client.js";
 import { PortfolioManager } from "./portfolio-manager.js";
+import { positionTracker } from "./position-tracker.js";
+import { balanceManager } from "./balance-manager.js";
+import { tradingClient } from "./polymarket-trading-client.js";
 
 import type { MarketResolvedEvent } from "../interfaces/websocket-types.js";
 
@@ -47,32 +44,32 @@ interface ActiveMarketState {
   slug: string | null;
   endDate: Date;
   targetPrice: number | null;
-  /** BTC spot price captured at the moment this market was first registered.
-   *  For Up/Down relative markets this IS the "price to beat" — the window
-   *  resolves UP if BTC ends >= this value, DOWN otherwise. */
   btcPriceAtWindowStart: number | null;
   outcomes: string[];
   lastPrices: Record<string, { bid: number; ask: number; mid: number }>;
   subscribedWs: boolean;
   resolved: boolean;
+  tickSize: string;
+  negRisk: boolean;
 }
 
-/** Tracks an open simulated position during resolution */
+/** Tracks an open real position during resolution */
 interface OpenPosition {
   tradeId: string;
   marketId: string;
+  conditionId: string | null;
   tokenId: string;
   outcomeLabel: string;
   entryPrice: number;
   entryShares: number;
   fees: number;
-  /** Total cash spent on this position (shares × avgPrice + fees). Used for cost-basis portfolio value. */
   actualCost: number;
   marketEndDate: Date;
-  /** Lowest bestBid observed while position is open (before window close). Initialised to entryPrice. */
   minPriceDuringPosition: number;
-  /** Prevents concurrent stop-loss execution for the same position */
   stopLossTriggered?: boolean;
+  polymarketOrderId?: string;
+  tickSize: string;
+  negRisk: boolean;
 }
 
 /**
@@ -146,7 +143,7 @@ export class MarketOrchestrator extends EventEmitter {
         label: windowLabel,
         threshold: config.strategy.entryPriceThreshold,
         tradeWindowSec: config.strategy.tradeFromWindowSeconds,
-        maxPositions: config.strategy.maxSimultaneousPositions,
+        maxPositions: DEFAULTS.MAX_SIMULTANEOUS_POSITIONS,
         startingCapital: config.portfolio.startingCapital,
       },
       "Starting market orchestrator",
@@ -231,12 +228,10 @@ export class MarketOrchestrator extends EventEmitter {
 
   getStats() {
     const config = getConfig();
-    const momentum = config.strategy.momentumEnabled
-      ? this.btcWatcher.getMomentum(
-          config.strategy.momentumLookbackMs,
-          config.strategy.momentumMinChangeUsd,
-        )
-      : null;
+    const momentum = this.btcWatcher.getMomentum(
+      DEFAULTS.MOMENTUM_LOOKBACK_MS,
+      DEFAULTS.MOMENTUM_MIN_CHANGE_USD,
+    );
     return {
       running: this.running,
       paused: this.paused,
@@ -543,6 +538,8 @@ export class MarketOrchestrator extends EventEmitter {
       lastPrices: {},
       subscribedWs: false,
       resolved: false,
+      tickSize: "0.01",
+      negRisk: false,
     };
 
     this.registerMarketState(state);
@@ -618,12 +615,10 @@ export class MarketOrchestrator extends EventEmitter {
     }
 
     const config = getConfig();
-    const momentumSignal = config.strategy.momentumEnabled
-      ? this.btcWatcher.getMomentum(
-          config.strategy.momentumLookbackMs,
-          config.strategy.momentumMinChangeUsd,
-        )
-      : null;
+    const momentumSignal = this.btcWatcher.getMomentum(
+      DEFAULTS.MOMENTUM_LOOKBACK_MS,
+      DEFAULTS.MOMENTUM_MIN_CHANGE_USD,
+    );
 
     this.strategyEngine.evaluatePrice(
       tokenId,
@@ -682,14 +677,14 @@ export class MarketOrchestrator extends EventEmitter {
   }
 
   /**
-   * Execute a simulated FAK (Fill-And-Kill) trade when the strategy detects an opportunity.
+   * Execute a real FAK (Fill-And-Kill) buy order on Polymarket when the strategy
+   * detects an opportunity.
    *
    * Flow:
-   *   1. Fetch live orderbook (depth-aware)
-   *   2. Compute position budget using share-based minimum
-   *   3. Simulate FAK buy — walk asks, fill what's available, kill the rest
-   *   4. Enforce Polymarket min_order_size (reject if filled < 5 shares)
-   *   5. Deduct actual fill cost from cash, persist trade
+   *   1. Compute position budget from real Polymarket balance
+   *   2. Determine worst-case price from config
+   *   3. Place real market buy order via SDK
+   *   4. Track position and register with position-tracker for WS updates
    */
   private async onOpportunity(opp: MarketOpportunity): Promise<void> {
     if (this.paused) return;
@@ -705,168 +700,128 @@ export class MarketOrchestrator extends EventEmitter {
     this.inFlightTokenIds.add(opp.tokenId);
 
     const config = getConfig();
+    const market = this.activeMarkets.get(opp.marketId);
 
     try {
-      // ── 1. Fetch live orderbook first (need depth for realistic fill) ──
-      const orderbookResult = await this.client.getOrderbook(opp.tokenId);
-      if (!orderbookResult?.data || !orderbookResult.data.asks?.length) {
-        logger.warn(
-          { tokenId: opp.tokenId },
-          "No orderbook available — will retry on next price update",
-        );
-        this.strategyEngine.clearEvaluated(opp.tokenId);
-        return;
-      }
-      const orderbook = orderbookResult.data;
-
-      // Extract best ask from the live orderbook (sorted ascending)
-      const sortedAsks = [...orderbook.asks].sort(
-        (a, b) => parseFloat(a.price) - parseFloat(b.price),
-      );
-      const bestAskPrice =
-        sortedAsks.length > 0 ? parseFloat(sortedAsks[0]!.price) : opp.bestAsk;
-
-      // ── 2. Compute position budget (sized at maxEntryPrice) ──────────
-      const openPositionsValue = this.computeOpenPositionsValue();
+      // ── 1. Compute position budget from real balance ──
       const positionBudget =
-        this.portfolioManager.computePositionBudget(openPositionsValue);
+        await this.portfolioManager.computePositionBudget();
 
       if (positionBudget <= 0) {
         logger.info(
-          {
-            openPositionsValue,
-            cash: this.portfolioManager.getCashBalance(),
-          },
-          "Insufficient cash for minimum share count — skipping",
+          { balance: await balanceManager.getBalance() },
+          "Insufficient Polymarket balance — skipping",
         );
         return;
       }
 
-      // ── 3. Simulate FAK buy — walk asks, respect depth at each level ──
-      const execution = simulateLimitBuy(
-        orderbook,
-        positionBudget,
-        config.strategy.maxEntryPrice,
+      // ── 2. Capture momentum context ──
+      const momentum = this.btcWatcher.getMomentum(
+        DEFAULTS.MOMENTUM_LOOKBACK_MS,
+        DEFAULTS.MOMENTUM_MIN_CHANGE_USD,
       );
 
-      if (execution.totalShares <= 0) {
-        logger.warn(
-          {
-            tokenId: opp.tokenId,
-            maxEntryPrice: config.strategy.maxEntryPrice,
-            bestAsk: bestAskPrice,
-          },
-          "No fill — all asks above maxEntryPrice; will retry",
-        );
-        this.strategyEngine.clearEvaluated(opp.tokenId);
-        return;
-      }
-
-      // ── 4. Enforce Polymarket's min_order_size ────────────────────
-      if (execution.belowMinimumOrderSize) {
-        logger.warn(
-          {
-            tokenId: opp.tokenId,
-            filled: execution.totalShares,
-            minOrderSize: execution.minOrderSize,
-          },
-          `Rejecting: filled ${execution.totalShares.toFixed(2)} shares < min_order_size ${execution.minOrderSize}`,
-        );
-        this.strategyEngine.clearEvaluated(opp.tokenId);
-        return;
-      }
-
-      const expectedProfit = calculateWinProfit(
-        execution.averagePrice,
-        execution.totalShares,
-        execution.fees,
-      );
-
-      if (expectedProfit < 0.001) {
-        logger.debug(
-          { expectedProfit, tokenId: opp.tokenId },
-          "Expected profit too small",
-        );
-        return;
-      }
-
-      // ── 5. Deduct actual cost from cash ─────────────────────────
-      const actualCost = execution.netCost;
-      const deducted = await this.portfolioManager.deductCash(actualCost);
-      if (!deducted) {
-        logger.warn(
-          { actualCost, cash: this.portfolioManager.getCashBalance() },
-          "Insufficient cash for actual fill cost — skipping",
-        );
-        return;
-      }
-
-      // ── Capture momentum context ─────────────────────────────
-      const momentum = config.strategy.momentumEnabled
-        ? this.btcWatcher.getMomentum(
-            config.strategy.momentumLookbackMs,
-            config.strategy.momentumMinChangeUsd,
-          )
-        : null;
-
-      // Determine fill status for audit
-      const fillStatus = execution.isPartialFill ? "PARTIAL" : "FULL";
-
-      const tradeRow = await createSimulatedTrade({
-        marketId: opp.marketId,
+      // ── 3. Place real order via SDK ──
+      const orderResult = await executeBuyOrder({
         tokenId: opp.tokenId,
+        conditionId: market?.conditionId ?? undefined,
+        marketId: opp.marketId,
+        marketCategory: undefined,
+        windowType: config.strategy.marketWindow,
         outcomeLabel: opp.outcomeLabel,
-        entryTs: new Date(),
-        entryPrice: execution.averagePrice.toFixed(6),
-        entryShares: execution.totalShares.toFixed(6),
-        positionBudget: positionBudget.toFixed(6),
-        actualCost: actualCost.toFixed(6),
-        entryFees: execution.fees.toFixed(6),
-        fillStatus,
+        positionBudget,
+        worstPrice: config.strategy.maxEntryPrice,
+        tickSize: market?.tickSize ?? "0.01",
+        negRisk: market?.negRisk ?? false,
         btcPriceAtEntry: opp.btcPrice,
         btcTargetPrice: opp.btcTargetPrice,
         btcDistanceUsd: opp.btcDistanceUsd,
         momentumDirection: momentum?.direction ?? undefined,
         momentumChangeUsd: momentum ? Math.abs(momentum.changeUsd) : undefined,
-        orderbookSnapshot: execution.orderbookSnapshot,
       });
-      const tradeId = tradeRow!.id;
 
-      // Track open position
-      const market = this.activeMarkets.get(opp.marketId);
+      if (!orderResult.success) {
+        logger.warn(
+          { error: orderResult.errorMessage, tokenId: opp.tokenId },
+          "Buy order failed — will retry on next opportunity",
+        );
+        this.strategyEngine.clearEvaluated(opp.tokenId);
+        return;
+      }
+
+      const filledShares = orderResult.filledShares ?? 0;
+      const avgPrice = orderResult.avgPrice ?? config.strategy.maxEntryPrice;
+      const totalCost = orderResult.totalCost ?? positionBudget;
+
+      if (filledShares <= 0) {
+        logger.warn({ tokenId: opp.tokenId }, "Zero fill — order not matched");
+        this.strategyEngine.clearEvaluated(opp.tokenId);
+        return;
+      }
+
+      // ── 4. Track position and register with position-tracker ──
+      // The trade was already persisted by executeBuyOrder — we need the trade ID
+      // We'll look it up by the polymarket order ID
+      const db = getDb();
+      const [tradeRow] = await db
+        .select()
+        .from(schema.trades)
+        .where(eq(schema.trades.polymarketOrderId, orderResult.orderID!))
+        .limit(1);
+
+      if (!tradeRow) {
+        logger.error(
+          { orderID: orderResult.orderID },
+          "Trade row not found after order execution",
+        );
+        return;
+      }
+
+      const tradeId = tradeRow.id;
+
       this.trackPosition({
         tradeId,
         marketId: opp.marketId,
+        conditionId: market?.conditionId ?? null,
         tokenId: opp.tokenId,
         outcomeLabel: opp.outcomeLabel,
-        entryPrice: execution.averagePrice,
-        entryShares: execution.totalShares,
-        fees: execution.fees,
-        actualCost,
+        entryPrice: avgPrice,
+        entryShares: filledShares,
+        fees: 0, // SDK handles fees
+        actualCost: totalCost,
         marketEndDate: market?.endDate ?? new Date(),
-        minPriceDuringPosition: execution.averagePrice, // start at entry
+        minPriceDuringPosition: avgPrice,
+        polymarketOrderId: orderResult.orderID,
+        tickSize: market?.tickSize ?? "0.01",
+        negRisk: market?.negRisk ?? false,
       });
+
+      // Register with position tracker for User WS updates
+      if (orderResult.orderID) {
+        positionTracker.trackOrder(orderResult.orderID, tradeId);
+      }
 
       this.scheduleResolutionMonitor(opp.marketId);
 
+      const balance = await balanceManager.getBalance();
       await logAudit(
         "info",
         "TRADE_OPENED",
         `Trade ${tradeId} opened for ${opp.outcomeLabel}`,
         {
           tradeId,
+          orderID: orderResult.orderID,
           tokenId: opp.tokenId,
           outcome: opp.outcomeLabel,
-          avgPrice: execution.averagePrice,
-          shares: execution.totalShares,
+          avgPrice,
+          shares: filledShares,
           positionBudget,
-          actualCost,
-          expectedProfit,
+          actualCost: totalCost,
           btcPrice: opp.btcPrice,
           btcTarget: opp.btcTargetPrice,
           btcDistance: opp.btcDistanceUsd,
           secondsToEnd: opp.secondsToEnd,
-          cashRemaining: this.portfolioManager.getCashBalance(),
+          balanceRemaining: balance,
         },
       );
 
@@ -875,36 +830,34 @@ export class MarketOrchestrator extends EventEmitter {
         tradeId,
         trade: tradeRow,
         ...opp,
-        execution,
-        expectedProfit,
+        orderResult,
       });
 
       logger.info(
         {
           tradeId,
+          orderID: orderResult.orderID,
           marketId: opp.marketId,
           outcome: opp.outcomeLabel,
-          avgPrice: execution.averagePrice.toFixed(4),
-          shares: execution.totalShares.toFixed(2),
+          avgPrice: avgPrice.toFixed(4),
+          shares: filledShares.toFixed(2),
           budget: positionBudget.toFixed(2),
-          actualCost: actualCost.toFixed(4),
-          fees: execution.fees.toFixed(4),
-          expectedProfit: expectedProfit.toFixed(4),
+          actualCost: totalCost.toFixed(4),
           btcPrice: opp.btcPrice.toFixed(2),
           btcDistance: opp.btcDistanceUsd.toFixed(2),
-          cashRemaining: this.portfolioManager.getCashBalance().toFixed(2),
+          balanceRemaining: balance.toFixed(2),
         },
-        "📈 Simulated trade opened",
+        "📈 Real trade opened on Polymarket",
       );
     } catch (error) {
       logger.error(
         { error, marketId: opp.marketId, tokenId: opp.tokenId },
-        "Failed to execute simulated trade",
+        "Failed to execute trade",
       );
       logAudit(
         "error",
         "SYSTEM",
-        `Failed to execute simulated trade for market ${opp.marketId}: ${error instanceof Error ? error.message : String(error)}`,
+        `Failed to execute trade for market ${opp.marketId}: ${error instanceof Error ? error.message : String(error)}`,
       ).catch(() => {});
     } finally {
       this.inFlightTokenIds.delete(opp.tokenId);
@@ -924,7 +877,6 @@ export class MarketOrchestrator extends EventEmitter {
    */
   private checkStopLoss(tokenId: string, bestBid: number): void {
     const config = getConfig();
-    if (!config.strategy.stopLossEnabled) return;
 
     const now = Date.now();
     const tradeIds = this.positionsByToken.get(tokenId);
@@ -965,104 +917,40 @@ export class MarketOrchestrator extends EventEmitter {
     triggerBid: number,
   ): Promise<void> {
     try {
-      const orderbookResult = await this.client.getOrderbook(pos.tokenId);
+      const sellResult = await executeSellOrder({
+        tokenId: pos.tokenId,
+        shares: pos.entryShares,
+        worstPrice: 0.01,
+        tickSize: pos.tickSize,
+        negRisk: pos.negRisk,
+        tradeId,
+      });
 
       let exitPrice: number;
-      let exitFees = 0;
+      let exitOrderId: string | undefined;
 
-      if (orderbookResult?.data && orderbookResult.data.bids?.length > 0) {
-        // Simulate a FAK (Fill-And-Kill) market sell: walk the bid side accepting
-        // any price (limitPrice = 0). This matches what a real Polymarket limit
-        // sell at $0.00 price would do — fill all available bids then cancel remainder.
-        const sellResult = simulateLimitSell(
-          orderbookResult.data,
-          pos.entryShares,
-          0, // accept any bid — full market sell
-        );
-
-        exitPrice =
-          sellResult.totalSharesSold > 0 ? sellResult.averagePrice : triggerBid;
-        exitFees = sellResult.totalSharesSold > 0 ? sellResult.fees : 0;
-
-        if (sellResult.isPartialFill) {
-          logger.warn(
-            {
-              tradeId,
-              sold: sellResult.totalSharesSold,
-              total: pos.entryShares,
-            },
-            "Stop-loss partial fill — insufficient bid liquidity",
-          );
-        }
+      if (sellResult.success) {
+        exitPrice = sellResult.avgPrice ?? triggerBid;
+        exitOrderId = sellResult.orderID;
       } else {
-        // No orderbook — use trigger bid as best approximation
         exitPrice = triggerBid;
+        logger.warn(
+          { tradeId, error: sellResult.errorMessage },
+          "Stop-loss sell order failed — resolving with trigger bid",
+        );
       }
 
-      const pnl = calculateEarlyExitPnl(
-        pos.entryPrice,
-        exitPrice,
-        pos.entryShares,
-        pos.fees,
-        exitFees,
-      );
-
-      // Classify based on actual PnL — stop-loss doesn't always mean a loss.
-      const isWin = pnl > 0;
-      const outcome = isWin ? "WIN" : "LOSS";
-
-      // Add sell proceeds back to cash: shares sold × exitPrice - exitFees
-      const sellProceeds = pos.entryShares * exitPrice - exitFees;
-      if (sellProceeds > 0) {
-        await this.portfolioManager.addCash(sellProceeds);
-      }
-
-      await resolveTrade(
+      const pnl = (exitPrice - pos.entryPrice) * pos.entryShares;
+      await this.settleTrade(
         tradeId,
-        outcome,
-        pnl.toFixed(6),
-        exitPrice.toFixed(6),
-        pos.minPriceDuringPosition.toFixed(8),
-      );
-      this.untrackPosition(tradeId);
-
-      await logAudit(
-        "warn",
+        pos,
         "STOP_LOSS",
-        `Stop-loss executed for trade ${tradeId}: bid ${triggerBid.toFixed(4)} → exit @ ${exitPrice.toFixed(4)}, PnL ${pnl.toFixed(4)} (${outcome})`,
-        {
-          tradeId,
-          tokenId: pos.tokenId,
-          entryPrice: pos.entryPrice,
-          exitPrice,
-          exitFees,
-          triggerBid,
-          pnl,
-          outcome,
-        },
-      );
-
-      logger.info(
-        {
-          tradeId,
-          marketId: pos.marketId,
-          outcome: pos.outcomeLabel,
-          entryPrice: pos.entryPrice.toFixed(4),
-          exitPrice: exitPrice.toFixed(4),
-          pnl: pnl.toFixed(4),
-          triggerBid: triggerBid.toFixed(4),
-          classification: outcome,
-        },
-        "🛑 Stop-loss sell executed",
-      );
-
-      this.emit("tradeResolved", {
-        tradeId,
-        isWin,
         pnl,
         exitPrice,
-        trade: null,
-      });
+        exitOrderId,
+        "STOP_LOSS",
+        "warn",
+      );
     } catch (error) {
       logger.error({ error, tradeId }, "Stop-loss execution error");
       logAudit(
@@ -1070,7 +958,6 @@ export class MarketOrchestrator extends EventEmitter {
         "SYSTEM",
         `Stop-loss execution error for trade ${tradeId}: ${error instanceof Error ? error.message : String(error)}`,
       ).catch(() => {});
-      // Reset flag to allow retry on next price tick
       const position = this.openPositions.get(tradeId);
       if (position) position.stopLossTriggered = false;
     }
@@ -1187,129 +1074,130 @@ export class MarketOrchestrator extends EventEmitter {
   }
 
   /**
+   * Settle a single trade: persist outcome, untrack, audit, and emit event.
+   */
+  private async settleTrade(
+    tradeId: string,
+    pos: OpenPosition,
+    outcome: "WIN" | "LOSS" | "STOP_LOSS",
+    pnl: number,
+    exitPrice: number,
+    exitOrderId?: string,
+    auditCategory = "TRADE_RESOLVED",
+    auditLevel: "info" | "warn" = "info",
+  ): Promise<void> {
+    const resolvedTrade = await resolveTrade(
+      tradeId,
+      outcome,
+      pnl.toFixed(6),
+      exitPrice.toFixed(6),
+      pos.minPriceDuringPosition.toFixed(8),
+      exitOrderId,
+    );
+
+    if (pos.polymarketOrderId) {
+      positionTracker.untrackOrder(pos.polymarketOrderId);
+    }
+
+    this.untrackPosition(tradeId);
+    balanceManager.invalidate();
+
+    const isWin = outcome === "WIN" || (outcome === "STOP_LOSS" && pnl > 0);
+
+    await logAudit(
+      auditLevel,
+      auditCategory,
+      `Trade ${tradeId} ${outcome}: PnL ${pnl.toFixed(4)}`,
+      { tradeId, marketId: pos.marketId, outcome, exitPrice, exitOrderId, pnl },
+    );
+
+    logger.info(
+      {
+        tradeId,
+        marketId: pos.marketId,
+        outcome,
+        pnl: pnl.toFixed(4),
+        exitPrice,
+      },
+      outcome === "WIN"
+        ? "✅ Trade WON"
+        : outcome === "STOP_LOSS"
+          ? "🛑 Stop-loss"
+          : "❌ Trade LOST",
+    );
+
+    this.emit("tradeResolved", {
+      tradeId,
+      isWin,
+      pnl,
+      exitPrice,
+      trade: resolvedTrade,
+    });
+  }
+
+  /**
    * Resolve all open positions for a market.
    */
   private async resolvePositionsForMarket(
     marketId: string,
     winningTokenId: string,
-    winningOutcome: string,
+    _winningOutcome: string,
   ): Promise<void> {
     for (const [tradeId, pos] of this.openPositions) {
       if (pos.marketId !== marketId) continue;
 
       const isWin = pos.tokenId === winningTokenId;
       const exitPrice = isWin ? 1.0 : 0.0;
-      const pnl = isWin
-        ? calculateWinProfit(pos.entryPrice, pos.entryShares, pos.fees)
-        : calculateLossAmount(pos.entryPrice, pos.entryShares, pos.fees);
+      const pnl = isWin ? pos.entryShares - pos.actualCost : -pos.actualCost;
 
-      // Add cash back: win = 1 × shares (payout), loss = $0
-      if (isWin) {
-        await this.portfolioManager.addCash(pos.entryShares); // shares × $1 payout
-      }
-      // For a loss, no cash comes back
-
-      const resolvedTrade = await resolveTrade(
+      await this.settleTrade(
         tradeId,
+        pos,
         isWin ? "WIN" : "LOSS",
-        pnl.toFixed(6),
-        exitPrice.toFixed(6),
-        pos.minPriceDuringPosition.toFixed(8),
-      );
-
-      await logAudit(
-        "info",
-        "TRADE_RESOLVED",
-        `Trade ${tradeId} resolved: ${isWin ? "WIN" : "LOSS"}`,
-        {
-          tradeId,
-          outcome: isWin ? "WIN" : "LOSS",
-          exitPrice,
-          pnl,
-          winningOutcome,
-          cashBalance: this.portfolioManager.getCashBalance(),
-        },
-      );
-
-      this.untrackPosition(tradeId);
-
-      logger.info(
-        {
-          tradeId,
-          marketId,
-          outcome: isWin ? "WIN" : "LOSS",
-          pnl: pnl.toFixed(4),
-        },
-        isWin ? "✅ Trade WON" : "❌ Trade LOST",
-      );
-
-      this.emit("tradeResolved", {
-        tradeId,
-        isWin,
         pnl,
         exitPrice,
-        trade: resolvedTrade,
-      });
+      );
+
+      // Redeem winning tokens from CTF contract
+      if (isWin && pos.conditionId) {
+        tradingClient
+          .redeemPositions(pos.conditionId)
+          .catch((err) =>
+            logger.warn(
+              { error: err, tradeId, conditionId: pos.conditionId },
+              "Auto-redeem failed — redeem manually",
+            ),
+          );
+      }
     }
 
-    // Only clean up if no more open positions reference this market
-    const hasRemainingPositions = this.hasOpenPositionsForMarket(marketId);
-    if (!hasRemainingPositions) {
+    if (!this.hasOpenPositionsForMarket(marketId)) {
       this.cleanupMarket(marketId);
     }
   }
 
   /**
    * Force-resolve expired positions after resolution watch hard timeout.
-   *
-   * First attempts one final API poll. If positions remain unresolved after
-   * that, they are force-closed as LOSS (conservative).
    */
   private async forceResolveExpired(marketId: string): Promise<void> {
-    // One last attempt via API
     await this.pollResolution(marketId);
 
-    // Collect any positions that are STILL open for this market
     const remaining: [string, OpenPosition][] = [];
     for (const [tradeId, pos] of this.openPositions) {
       if (pos.marketId === marketId) remaining.push([tradeId, pos]);
     }
 
     for (const [tradeId, pos] of remaining) {
-      const pnl = calculateLossAmount(
-        pos.entryPrice,
-        pos.entryShares,
-        pos.fees,
-      );
-
-      await resolveTrade(
+      await this.settleTrade(
         tradeId,
+        pos,
         "LOSS",
-        pnl.toFixed(6),
-        "0",
-        pos.minPriceDuringPosition.toFixed(8),
-      );
-      this.untrackPosition(tradeId);
-
-      await logAudit(
-        "warn",
+        -pos.actualCost,
+        0,
+        undefined,
         "TRADE_FORCE_RESOLVED",
-        `Trade ${tradeId} force-resolved as LOSS after timeout`,
-        { tradeId, marketId, pnl },
+        "warn",
       );
-
-      logger.warn(
-        { tradeId, marketId, pnl: pnl.toFixed(4) },
-        "Position force-resolved as LOSS after timeout",
-      );
-
-      this.emit("tradeResolved", {
-        tradeId,
-        isWin: false,
-        pnl,
-        exitPrice: 0,
-        trade: null,
-      });
     }
   }
 
@@ -1317,27 +1205,35 @@ export class MarketOrchestrator extends EventEmitter {
    * Load existing open trades from the database on startup (single JOIN query).
    */
   private async loadOpenPositions(): Promise<void> {
-    const rows = await loadOpenTradesWithMarkets();
+    const rows = await loadActiveTradesWithMarkets();
 
     for (const { trade, marketEndDate } of rows) {
       this.trackPosition({
         tradeId: trade.id,
         marketId: trade.marketId ?? "",
+        conditionId: trade.conditionId ?? null,
         tokenId: trade.tokenId ?? "",
         outcomeLabel: trade.outcomeLabel ?? "",
-        entryPrice: parseFloat(trade.entryPrice),
-        entryShares: parseFloat(trade.entryShares),
+        entryPrice: parseFloat(trade.entryPrice ?? "0"),
+        entryShares: parseFloat(trade.entryShares ?? "0"),
         fees: parseFloat(trade.entryFees ?? "0"),
         actualCost: parseFloat(trade.actualCost ?? "0"),
         marketEndDate: marketEndDate ? new Date(marketEndDate) : new Date(),
-        // Restore from DB if saved; otherwise start at entry price
         minPriceDuringPosition: parseFloat(
           trade.minPriceDuringPosition &&
             parseFloat(trade.minPriceDuringPosition) > 0
             ? trade.minPriceDuringPosition
-            : trade.entryPrice,
+            : (trade.entryPrice ?? "0"),
         ),
+        polymarketOrderId: trade.polymarketOrderId ?? undefined,
+        tickSize: "0.01",
+        negRisk: false,
       });
+
+      // Register with position tracker for User WS updates
+      if (trade.polymarketOrderId) {
+        positionTracker.trackOrder(trade.polymarketOrderId, trade.id);
+      }
 
       // Set up resolution monitoring for existing positions
       if (trade.marketId) this.scheduleResolutionMonitor(trade.marketId);
@@ -1424,6 +1320,8 @@ export class MarketOrchestrator extends EventEmitter {
         lastPrices: {},
         subscribedWs: false,
         resolved: false,
+        tickSize: row.tickSize ?? "0.01",
+        negRisk: row.negRisk ?? false,
       };
 
       this.registerMarketState(state);

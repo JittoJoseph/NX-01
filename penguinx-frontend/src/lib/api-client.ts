@@ -3,15 +3,13 @@
  */
 
 import type {
-  SimulatedTrade,
+  Trade,
   SystemStats,
   LiveMarketInfo,
   DiscoveredMarket,
   PerformanceMetrics,
-  PortfolioState,
   MonteCarloResult,
   AuditLog,
-  HealthResponse,
   WsMessage,
 } from "./types";
 
@@ -61,10 +59,6 @@ export class ApiClient {
     this.baseUrl = baseUrl;
   }
 
-  async getHealth(): Promise<HealthResponse> {
-    return fetchWithRetry(`${this.baseUrl}/health`);
-  }
-
   async ping(): Promise<{ pong: boolean; ts: number }> {
     return fetchWithRetry(`${this.baseUrl}/ping`);
   }
@@ -88,7 +82,7 @@ export class ApiClient {
     status?: string;
     limit?: number;
     offset?: number;
-  }): Promise<SimulatedTrade[]> {
+  }): Promise<Trade[]> {
     const searchParams = new URLSearchParams();
     if (params?.status) searchParams.set("status", params.status);
     if (params?.limit) searchParams.set("limit", String(params.limit));
@@ -112,10 +106,6 @@ export class ApiClient {
     return fetchWithRetry(`${this.baseUrl}/api/audit${qs ? `?${qs}` : ""}`);
   }
 
-  async getPortfolio(): Promise<PortfolioState> {
-    return fetchWithRetry(`${this.baseUrl}/api/portfolio`);
-  }
-
   async pauseSystem(
     password: string,
   ): Promise<{ success: boolean; paused: boolean }> {
@@ -130,6 +120,15 @@ export class ApiClient {
   ): Promise<{ success: boolean; paused: boolean }> {
     return fetchWithRetry(`${this.baseUrl}/api/admin/resume`, {
       method: "POST",
+      headers: { Authorization: `Bearer ${password}` },
+    });
+  }
+
+  async wipeSystem(
+    password: string,
+  ): Promise<{ success: boolean; message: string }> {
+    return fetchWithRetry(`${this.baseUrl}/api/admin/wipe`, {
+      method: "DELETE",
       headers: { Authorization: `Bearer ${password}` },
     });
   }

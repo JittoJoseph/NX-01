@@ -9,9 +9,11 @@ import { createModuleLogger } from "../utils/logger.js";
 import { getConfig } from "../utils/config.js";
 import { getDb, wipeAndResetPortfolio, getPortfolio } from "../db/client.js";
 import * as schema from "../db/schema.js";
-import { eq, desc, and, sql, gte } from "drizzle-orm";
+import { eq, desc, and, sql, gte, inArray } from "drizzle-orm";
 import { getMarketOrchestrator } from "./market-orchestrator.js";
 import { getBtcPriceWatcher } from "./btc-price-watcher.js";
+import { balanceManager } from "./balance-manager.js";
+import { DEFAULTS } from "../types/index.js";
 import {
   calculatePortfolioPerformance,
   type TimePeriod,
@@ -77,20 +79,17 @@ export class ApiServer {
     // frontend gets real-time momentum updates on every tick, not just every 2s.
     const btcWatcher = getBtcPriceWatcher();
     btcWatcher.on("btcPriceUpdate", (data) => {
-      const config = getConfig();
-      const momentum = config.strategy.momentumEnabled
-        ? btcWatcher.getMomentum(
-            config.strategy.momentumLookbackMs,
-            config.strategy.momentumMinChangeUsd,
-          )
-        : null;
+      const momentum = btcWatcher.getMomentum(
+        DEFAULTS.MOMENTUM_LOOKBACK_MS,
+        DEFAULTS.MOMENTUM_MIN_CHANGE_USD,
+      );
       this.broadcast({ type: "btcPriceUpdate", data: { ...data, momentum } });
     });
 
     return new Promise((resolve) => {
-      this.server!.listen(config.server.port, config.server.host, () => {
+      this.server!.listen(config.server.port, DEFAULTS.HOST, () => {
         logger.info(
-          { host: config.server.host, port: config.server.port },
+          { host: DEFAULTS.HOST, port: config.server.port },
           "API server started",
         );
         resolve();
@@ -172,13 +171,9 @@ export class ApiServer {
             maxEntryPrice: config.strategy.maxEntryPrice,
             tradeFromWindowSeconds: config.strategy.tradeFromWindowSeconds,
             startingCapital: config.portfolio.startingCapital,
-            maxPositions: config.strategy.maxSimultaneousPositions,
-            minBtcDistanceUsd: config.strategy.minBtcDistanceUsd,
-            stopLossEnabled: config.strategy.stopLossEnabled,
+            maxPositions: DEFAULTS.MAX_SIMULTANEOUS_POSITIONS,
+            minBtcDistanceUsd: DEFAULTS.MIN_BTC_DISTANCE_USD,
             stopLossPriceTrigger: config.strategy.stopLossPriceTrigger,
-            momentumEnabled: config.strategy.momentumEnabled,
-            momentumLookbackMs: config.strategy.momentumLookbackMs,
-            momentumMinChangeUsd: config.strategy.momentumMinChangeUsd,
           },
         });
       } catch (error) {
@@ -257,23 +252,27 @@ export class ApiServer {
         const status = req.query.status as string | undefined;
 
         const conditions = [];
-        if (status === "OPEN" || status === "SETTLED") {
-          conditions.push(eq(schema.simulatedTrades.status, status));
+        if (status === "OPEN") {
+          conditions.push(
+            inArray(schema.trades.status, ["PENDING", "MATCHED", "CONFIRMED"]),
+          );
+        } else if (status === "SETTLED") {
+          conditions.push(eq(schema.trades.status, "SETTLED"));
         }
 
         const baseQuery = db
           .select({
-            trade: schema.simulatedTrades,
+            trade: schema.trades,
             marketEndDate: schema.markets.endDate,
             marketSlug: schema.markets.slug,
             marketQuestion: schema.markets.question,
           })
-          .from(schema.simulatedTrades)
+          .from(schema.trades)
           .leftJoin(
             schema.markets,
-            eq(schema.simulatedTrades.marketId, schema.markets.id),
+            eq(schema.trades.marketId, schema.markets.id),
           )
-          .orderBy(desc(schema.simulatedTrades.entryTs))
+          .orderBy(desc(schema.trades.entryTs))
           .limit(limit)
           .offset(offset);
 
@@ -404,13 +403,13 @@ export class ApiServer {
         }
         const orchestrator = getMarketOrchestrator();
         const openPositionsValue = orchestrator.computeOpenPositionsValue();
-        const cashBalance = parseFloat(portfolio.cashBalance);
+        const realBalance = await balanceManager.getBalance();
         const initialCapital = parseFloat(portfolio.initialCapital);
-        const portfolioValue = cashBalance + openPositionsValue;
+        const portfolioValue = realBalance + openPositionsValue;
 
         res.json({
           initialCapital,
-          cashBalance,
+          cashBalance: realBalance,
           openPositionsValue,
           portfolioValue,
           roi:
@@ -462,11 +461,12 @@ export class ApiServer {
   /**
    * Periodically broadcast system state.
    */
-  private broadcastState(): void {
+  private async broadcastState(): Promise<void> {
     const orchestrator = getMarketOrchestrator();
     const btcWatcher = getBtcPriceWatcher();
     const stats = orchestrator.getStats();
     const pm = orchestrator.portfolioManager;
+    const balance = balanceManager.getCachedBalance();
     this.broadcast({
       type: "systemState",
       data: {
@@ -474,7 +474,7 @@ export class ApiServer {
         liveMarkets: orchestrator.getLiveMarkets(),
         btcPrice: btcWatcher.getCurrentPrice(),
         portfolio: {
-          cashBalance: pm.getCashBalance(),
+          cashBalance: balance,
           initialCapital: pm.getInitialCapital(),
           openPositionsValue: orchestrator.computeOpenPositionsValue(),
         },

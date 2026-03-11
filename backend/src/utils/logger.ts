@@ -1,33 +1,32 @@
 import pino from "pino";
-import { getConfig } from "./config.js";
+import { DEFAULTS } from "../types/index.js";
 
 let loggerInstance: pino.Logger | null = null;
 
 export function getLogger(): pino.Logger {
   if (!loggerInstance) {
-    const config = getConfig();
+    const isDev = process.env.NODE_ENV === "development";
 
     loggerInstance = pino({
-      level: config.logging.level,
-      transport:
-        config.env === "development"
-          ? {
-              target: "pino-pretty",
-              options: {
-                colorize: true,
-                translateTime: "SYS:standard",
-                ignore: "pid,hostname",
-              },
-            }
-          : {
-              target: "pino-pretty",
-              options: {
-                colorize: false,
-                translateTime: "SYS:HH:MM:ss",
-                ignore: "pid,hostname,time",
-                singleLine: true,
-              },
+      level: DEFAULTS.LOG_LEVEL,
+      transport: isDev
+        ? {
+            target: "pino-pretty",
+            options: {
+              colorize: true,
+              translateTime: "SYS:standard",
+              ignore: "pid,hostname",
             },
+          }
+        : {
+            target: "pino-pretty",
+            options: {
+              colorize: false,
+              translateTime: "SYS:HH:MM:ss",
+              ignore: "pid,hostname,time",
+              singleLine: true,
+            },
+          },
       formatters: {
         level: (label) => ({ level: label }),
       },

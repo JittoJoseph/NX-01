@@ -1,8 +1,9 @@
 export type {
-  SimulatedTrade,
+  Trade,
   Market,
   AuditLog,
   Portfolio,
+  BalanceSnapshot,
 } from "./drizzle-types.js";
 
 export type {

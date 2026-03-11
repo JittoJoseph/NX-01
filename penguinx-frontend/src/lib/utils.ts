@@ -15,3 +15,26 @@ export function pnlColor(value: number, opacity?: string): string {
 export function formatPnl(value: number, decimals = 4): string {
   return `${value >= 0 ? "+" : "-"}$${Math.abs(value).toFixed(decimals)}`;
 }
+
+export function fmtUsd(n: number, dp = 2): string {
+  return (
+    "$" +
+    Math.abs(n).toLocaleString("en-US", {
+      minimumFractionDigits: dp,
+      maximumFractionDigits: dp,
+    })
+  );
+}
+
+export function fmtPct(n: number, dp = 1): string {
+  return `${n.toFixed(dp)}%`;
+}
+
+export function polymarketUrl(
+  slug: string | null | undefined,
+  id: string,
+): string {
+  return slug
+    ? `https://polymarket.com/event/${slug}`
+    : `https://polymarket.com/market/${id}`;
+}

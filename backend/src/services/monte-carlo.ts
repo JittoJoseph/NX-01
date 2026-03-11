@@ -139,11 +139,11 @@ export async function runMonteCarloAnalysis(
   //  1. Load settled trades (only the two columns we need)
   const rows = await db
     .select({
-      realizedPnl: schema.simulatedTrades.realizedPnl,
-      actualCost: schema.simulatedTrades.actualCost,
+      realizedPnl: schema.trades.realizedPnl,
+      actualCost: schema.trades.actualCost,
     })
-    .from(schema.simulatedTrades)
-    .where(eq(schema.simulatedTrades.status, "SETTLED"));
+    .from(schema.trades)
+    .where(eq(schema.trades.status, "SETTLED"));
 
   if (rows.length === 0) {
     throw new Error("No settled trades to analyse  need historical data");

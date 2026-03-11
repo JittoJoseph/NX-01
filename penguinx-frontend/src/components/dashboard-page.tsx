@@ -7,7 +7,7 @@ import { TradesTable } from "./trades-table";
 import { TradeDetailPopup } from "./trade-detail-popup";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ExternalLink } from "lucide-react";
-import { pnlColor, formatPnl } from "@/lib/utils";
+import { pnlColor, formatPnl, polymarketUrl as pmUrl } from "@/lib/utils";
 import {
   useTrades,
   useSystemStats,
@@ -22,7 +22,7 @@ import {
   useAnimatedNumber,
 } from "@/lib/hooks";
 import type {
-  SimulatedTrade,
+  Trade,
   DiscoveredMarket,
   SystemStats,
   LiveMarketInfo,
@@ -33,9 +33,7 @@ import { MARKET_WINDOW_LABELS, type MarketWindow } from "@/lib/types";
 
 export function DashboardPage() {
   const [activeTab, setActiveTab] = useState("trades");
-  const [selectedTrade, setSelectedTrade] = useState<SimulatedTrade | null>(
-    null,
-  );
+  const [selectedTrade, setSelectedTrade] = useState<Trade | null>(null);
   const [btcPrice, setBtcPrice] = useState<{
     price: number;
     timestamp: number;
@@ -368,22 +366,9 @@ export function DashboardPage() {
                     value={`$${stats.config.minBtcDistanceUsd}`}
                   />
                   <StatRow
-                    label="Momentum Filter"
-                    value={
-                      stats.config.momentumEnabled
-                        ? `$${stats?.config?.momentumMinChangeUsd}`
-                        : "DISABLED"
-                    }
-                  />
-                  <StatRow
                     label="Stop Loss"
-                    value={
-                      stats.config.stopLossEnabled
-                        ? `${((stats.config as any).stopLossPriceTrigger * 100).toFixed(0)}¢ trigger`
-                        : "DISABLED"
-                    }
-                    accent={stats.config.stopLossEnabled}
-                    warn={!stats.config.stopLossEnabled}
+                    value={`${(stats.config.stopLossPriceTrigger * 100).toFixed(0)}¢ trigger`}
+                    accent
                   />
                 </div>
               ) : (
@@ -411,16 +396,6 @@ export function DashboardPage() {
 
 /* ─── Sub-components ───────────────────────────────────────── */
 
-function polymarketUrl(market: LiveMarketInfo): string {
-  if (market.slug) return `https://polymarket.com/event/${market.slug}`;
-  return `https://polymarket.com/market/${market.marketId}`;
-}
-
-function polymarketMarketUrl(market: DiscoveredMarket): string {
-  if (market.slug) return `https://polymarket.com/event/${market.slug}`;
-  return `https://polymarket.com/market/${market.id}`;
-}
-
 function TopDashboardSection({
   stats,
   btcPrice,
@@ -441,7 +416,7 @@ function TopDashboardSection({
   windowLabel: string;
   refetchMarkets: () => void;
   btcPriceAtWindowStartFallback: number | null;
-  trades: SimulatedTrade[];
+  trades: Trade[];
   liveMarkets: LiveMarketInfo[];
 }) {
   const [period, setPeriod] = useState<"1D" | "1W" | "1M" | "ALL">("ALL");
@@ -489,10 +464,10 @@ function TopDashboardSection({
   const roi = parseFloat(performance?.roi || "0");
   const winRate = parseFloat(performance?.winRate || "0");
   const totalDeployed = parseFloat(performance?.totalDeployed || "0");
-  const cashBalance = parseFloat(performance?.cashBalance || "0");
+  const balance = parseFloat(performance?.lastKnownBalance || "0");
   const initialCapital = parseFloat(performance?.initialCapital || "0");
   const openPositionsValue = parseFloat(performance?.openPositionsValue || "0");
-  const portfolioValue = cashBalance + openPositionsValue;
+  const portfolioValue = balance + openPositionsValue;
   // Use live-calculated unrealized PnL instead of API value
   const unrealizedPnl = liveUnrealizedPnL;
   // totalPnl from the API already sums only SETTLED trade realizedPnl — it IS realized PnL
@@ -623,7 +598,7 @@ function TopDashboardSection({
             </div>
             {primaryMarket && (
               <a
-                href={polymarketUrl(primaryMarket)}
+                href={pmUrl(primaryMarket.slug, primaryMarket.marketId)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-[10px] font-mono text-muted-foreground/50 hover:text-blue-400 flex items-center gap-1 transition-colors"
@@ -840,7 +815,7 @@ function TopDashboardSection({
                   ${portfolioValue.toFixed(2)}
                 </div>
                 <div className="text-[10px] font-mono text-muted-foreground/50 mt-0.5">
-                  cash ${cashBalance.toFixed(2)} + positions $
+                  balance ${balance.toFixed(2)} + positions $
                   {openPositionsValue.toFixed(2)}
                 </div>
               </div>
@@ -1139,7 +1114,7 @@ function MarketsPanel({
             const label =
               MARKET_WINDOW_LABELS[market.windowType as MarketWindow] ??
               market.windowType;
-            const href = polymarketMarketUrl(market);
+            const href = pmUrl(market.slug, market.id);
 
             // Compute status from API's computedStatus field, fallback to
             // local calculation

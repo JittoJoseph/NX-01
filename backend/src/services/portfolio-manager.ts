@@ -1,32 +1,25 @@
 import Decimal from "decimal.js";
 import { createModuleLogger } from "../utils/logger.js";
 import { getConfig } from "../utils/config.js";
-import { calculateFeePerShare } from "./execution-simulator.js";
-import { POLYMARKET_MIN_ORDER_SIZE } from "../types/index.js";
-import {
-  getPortfolio,
-  initPortfolio,
-  updateCashBalance,
-} from "../db/client.js";
+import { POLYMARKET_MIN_ORDER_SIZE, DEFAULTS } from "../types/index.js";
+import { getPortfolio, initPortfolio } from "../db/client.js";
+import { balanceManager } from "./balance-manager.js";
 
 const logger = createModuleLogger("portfolio-manager");
 
 /**
  * PortfolioManager
  *
- * Tracks the simulated portfolio's cash balance and computes position sizes.
+ * Uses the real Polymarket USDC.e balance (via BalanceManager) for position sizing.
+ * No local cash tracking — the on-chain balance is the source of truth.
  *
  * Key rules:
- * - Position sizing = portfolioValue / maxPositions
- * - portfolioValue = cash + sum of open positions at current price
- * - Only the *actual fill cost* (shares × avgPrice + fees) is deducted from cash
- * - Budget is always sized at maxEntryPrice (worst-case we'd accept), so even
- *   if entering at a lower price the budget can absorb fills up to the limit
+ * - Position sizing = availableBalance / maxPositions
+ * - Only place orders if real balance can cover the position budget
  * - Minimum position: POLYMARKET_MIN_ORDER_SIZE shares (protocol-level = 5)
- * - Cash balance is persisted in DB so it survives restarts
+ * - DB portfolio row tracks initial capital for P&L calculations
  */
 export class PortfolioManager {
-  private cashBalance: Decimal = new Decimal(0);
   private initialCapital: Decimal = new Decimal(0);
 
   /** Initialise from DB or create fresh portfolio row. */
@@ -36,32 +29,36 @@ export class PortfolioManager {
     if (!portfolio) {
       throw new Error("Failed to initialise portfolio row");
     }
-    this.cashBalance = new Decimal(portfolio.cashBalance);
     this.initialCapital = new Decimal(portfolio.initialCapital);
+
+    // Seed balance cache from Polymarket
+    const balance = await balanceManager.getBalance();
+
     logger.info(
       {
         initialCapital: this.initialCapital.toString(),
-        cashBalance: this.cashBalance.toString(),
-        maxPositions: config.strategy.maxSimultaneousPositions,
+        realBalance: balance.toFixed(2),
+        maxPositions: DEFAULTS.MAX_SIMULTANEOUS_POSITIONS,
       },
-      "Portfolio initialised",
+      "Portfolio initialised with real Polymarket balance",
     );
   }
 
-  /** Reload cash balance from DB (e.g. after a wipe). */
+  /** Reload from DB after wipe/reset. */
   async reload(): Promise<void> {
     const portfolio = await getPortfolio();
     if (!portfolio) {
       throw new Error("Portfolio row missing — call init() first");
     }
-    this.cashBalance = new Decimal(portfolio.cashBalance);
     this.initialCapital = new Decimal(portfolio.initialCapital);
+    balanceManager.invalidate();
   }
 
   // ── Getters ──────────────────────────────────────────────────
 
-  getCashBalance(): number {
-    return this.cashBalance.toNumber();
+  /** Get the real USDC.e balance from Polymarket (cached with 5s TTL). */
+  async getBalance(): Promise<number> {
+    return balanceManager.getBalance();
   }
 
   getInitialCapital(): number {
@@ -71,94 +68,41 @@ export class PortfolioManager {
   // ── Position sizing ──────────────────────────────────────────
 
   /**
-   * Compute the budget for the next position.
+   * Compute the budget for the next position using real Polymarket balance.
    *
-   * Budget is sized at **maxEntryPrice** (the worst-case price we'd accept),
-   * not at the current best ask. This guarantees the budget can fill at
-   * least POLYMARKET_MIN_ORDER_SIZE shares even if every eligible ask level
-   * is right at our limit price.
+   *   balance    = real USDC.e on Polymarket
+   *   rawBudget  = balance / maxSimultaneousPositions
+   *   minBudget  = MIN_ORDER_SIZE × maxEntryPrice (rough minimum)
+   *   budget     = max(rawBudget, minBudget), capped at balance
    *
-   *   maxPrice   = config.strategy.maxEntryPrice
-   *   rawBudget  = portfolioValue / maxSimultaneousPositions
-   *   minBudget  = MIN_ORDER_SIZE × (maxPrice + fee_at_maxPrice)
-   *   budget     = max(rawBudget, minBudget)
-   *   if cash < minBudget → return 0 (can't afford minimum order)
-   *   cap at cashBalance
-   *
-   * @param openPositionsValue  Sum of actualCost for all OPEN trades
-   * @returns Budget in USD, or 0 if cash can't cover the minimum share count
+   * @returns Budget in USD, or 0 if balance can't cover the minimum order
    */
-  computePositionBudget(openPositionsValue: number): number {
+  async computePositionBudget(): Promise<number> {
     const config = getConfig();
     const minShares = POLYMARKET_MIN_ORDER_SIZE;
     const maxPrice = config.strategy.maxEntryPrice;
-    const portfolioValue = this.cashBalance.plus(openPositionsValue);
-    const rawBudget = portfolioValue.div(
-      config.strategy.maxSimultaneousPositions,
-    );
+    const balance = new Decimal(await balanceManager.getBalance());
+    const rawBudget = balance.div(DEFAULTS.MAX_SIMULTANEOUS_POSITIONS);
 
-    // Cost of the minimum share count at maxEntryPrice (worst case we'd accept)
-    const feePerShare = calculateFeePerShare(maxPrice);
-    const costPerShare = new Decimal(maxPrice).plus(feePerShare);
-    const minBudget = costPerShare.mul(minShares);
+    // Minimum cost: shares × maxEntryPrice (fees handled by SDK)
+    const minBudget = new Decimal(maxPrice).mul(minShares);
 
-    // Use whichever is larger: the equal-share slice or the minimum-shares cost
     const budget = Decimal.max(rawBudget, minBudget);
 
-    // If we can't even afford the minimum shares at worst-case price, skip
-    if (this.cashBalance.lt(minBudget)) {
+    if (balance.lt(minBudget)) {
       logger.warn(
         {
-          cash: this.cashBalance.toString(),
+          balance: balance.toString(),
           minBudget: minBudget.toString(),
           minShares,
           maxEntryPrice: maxPrice,
         },
-        `Insufficient cash for ${minShares}-share minimum at maxEntryPrice — skipping`,
+        "Insufficient Polymarket balance for minimum order — skipping",
       );
       return 0;
     }
 
-    // Don't spend more than available cash.
-    const capped = Decimal.min(budget, this.cashBalance);
+    const capped = Decimal.min(budget, balance);
     return capped.toDP(8).toNumber();
-  }
-
-  // ── Cash mutations ───────────────────────────────────────────
-
-  /**
-   * Deduct the actual fill cost from cash after a buy is executed.
-   * Returns false if there's not enough cash (shouldn't happen if
-   * computePositionBudget was called first, but defensive).
-   */
-  async deductCash(amount: number): Promise<boolean> {
-    const dec = new Decimal(amount);
-    if (dec.gt(this.cashBalance)) {
-      logger.error(
-        { requested: dec.toString(), available: this.cashBalance.toString() },
-        "Attempted to deduct more cash than available",
-      );
-      return false;
-    }
-    this.cashBalance = this.cashBalance.minus(dec);
-    await updateCashBalance(this.cashBalance.toString());
-    logger.debug(
-      { deducted: dec.toString(), remaining: this.cashBalance.toString() },
-      "Cash deducted",
-    );
-    return true;
-  }
-
-  /**
-   * Add cash back after a position is resolved (win payout or stop-loss sell).
-   */
-  async addCash(amount: number): Promise<void> {
-    const dec = new Decimal(amount);
-    this.cashBalance = this.cashBalance.plus(dec);
-    await updateCashBalance(this.cashBalance.toString());
-    logger.debug(
-      { added: dec.toString(), newBalance: this.cashBalance.toString() },
-      "Cash added",
-    );
   }
 }

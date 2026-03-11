@@ -6,18 +6,11 @@ import Link from "next/link";
 import { RefreshCw, AlertTriangle, TrendingUp } from "lucide-react";
 import type { MonteCarloResult } from "@/lib/types";
 import { ApiClient } from "@/lib/api-client";
+import { fmtUsd, fmtPct } from "@/lib/utils";
 
 const api = new ApiClient();
 const MIN_RELIABLE_TRADES = 30;
 
-//  Formatting helpers
-const fmtUsd = (n: number, dp = 2) =>
-  "$" +
-  Math.abs(n).toLocaleString("en-US", {
-    minimumFractionDigits: dp,
-    maximumFractionDigits: dp,
-  });
-const fmtPct = (n: number, dp = 1) => `${n.toFixed(dp)}%`;
 const fmtDelta = (n: number, dp = 2) => `${n >= 0 ? "+" : "-"}${fmtUsd(n, dp)}`;
 
 const TRADES_OPTIONS = [25, 50, 100, 200, 500] as const;

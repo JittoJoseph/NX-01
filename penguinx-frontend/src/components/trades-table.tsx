@@ -1,17 +1,17 @@
 "use client";
 
-import type { SimulatedTrade, LiveMarketPrice } from "@/lib/types";
+import type { Trade, LiveMarketPrice } from "@/lib/types";
 import { MARKET_WINDOW_LABELS, type MarketWindow } from "@/lib/types";
 import { pnlColor, formatPnl } from "@/lib/utils";
 
 interface TradesTableProps {
-  trades: SimulatedTrade[];
+  trades: Trade[];
   loading: boolean;
   /** Real-time bid/ask/mid prices keyed by tokenId, refreshed every ~2s from WS */
   livePrices?: Record<string, LiveMarketPrice>;
   /** Market end dates keyed by marketId — fallback when trade.marketEndDate is absent */
   marketEndDates?: Record<string, string>;
-  onTradeClick?: (trade: SimulatedTrade) => void;
+  onTradeClick?: (trade: Trade) => void;
   /** Called when user clicks Show More */
   onLoadMore?: () => void;
   hasMore?: boolean;
@@ -331,7 +331,7 @@ export function TradesTable({
 /* ─── Helpers ──────────────────────────────────────────────── */
 
 function extractTimeWindow(
-  trade: SimulatedTrade,
+  trade: Trade,
   marketEndDate: string | null,
 ): { time: string; date: string } {
   const windowType = trade.windowType as MarketWindow | null;

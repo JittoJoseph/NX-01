@@ -3,7 +3,7 @@ import postgres from "postgres";
 import { getConfig } from "../utils/config.js";
 import { createModuleLogger } from "../utils/logger.js";
 import * as schema from "./schema.js";
-import { eq, sql, and } from "drizzle-orm";
+import { eq, sql, and, inArray } from "drizzle-orm";
 
 const logger = createModuleLogger("database");
 
@@ -43,12 +43,6 @@ export async function disconnectDatabase(): Promise<void> {
 // Market helpers
 // ============================================
 
-/**
- * Insert a market row only if it doesn't already exist.
- * Uses INSERT … ON CONFLICT DO NOTHING so we never update existing rows
- * just because the scanner re-discovered them.
- * Returns `true` when a new row was actually inserted.
- */
 export async function insertMarketIfNew(
   id: string,
   data: {
@@ -61,6 +55,9 @@ export async function insertMarketIfNew(
     category: string;
     endDate?: string | null;
     targetPrice?: number | null;
+    negRisk?: boolean;
+    tickSize?: string;
+    feesEnabled?: boolean;
     active?: boolean;
     metadata?: unknown;
   },
@@ -78,6 +75,9 @@ export async function insertMarketIfNew(
     category: data.category,
     endDate: data.endDate || null,
     targetPrice: data.targetPrice?.toString() ?? null,
+    negRisk: data.negRisk ?? false,
+    tickSize: data.tickSize ?? "0.01",
+    feesEnabled: data.feesEnabled ?? true,
     active: data.active ?? true,
     metadata: data.metadata as any,
   };
@@ -91,36 +91,36 @@ export async function insertMarketIfNew(
   return result.length > 0;
 }
 
-/**
- * Load open trades with their market data in a single query (JOIN).
- * Avoids N+1 queries during startup.
- */
-export async function loadOpenTradesWithMarkets() {
-  const database = getDb();
-  const rows = await database
-    .select({
-      trade: schema.simulatedTrades,
-      marketEndDate: schema.markets.endDate,
-    })
-    .from(schema.simulatedTrades)
-    .leftJoin(
-      schema.markets,
-      eq(schema.simulatedTrades.marketId, schema.markets.id),
-    )
-    .where(eq(schema.simulatedTrades.status, "OPEN"));
-  return rows;
-}
-
 // ============================================
 // Trade helpers
 // ============================================
 
-export async function createSimulatedTrade(data: {
+/** Load active trades (PENDING, MATCHED, CONFIRMED) with market data. */
+export async function loadActiveTradesWithMarkets() {
+  const database = getDb();
+  const rows = await database
+    .select({
+      trade: schema.trades,
+      marketEndDate: schema.markets.endDate,
+    })
+    .from(schema.trades)
+    .leftJoin(schema.markets, eq(schema.trades.marketId, schema.markets.id))
+    .where(inArray(schema.trades.status, ["PENDING", "MATCHED", "CONFIRMED"]));
+  return rows;
+}
+
+/** Create a new trade record when an order is placed. */
+export async function createTrade(data: {
+  polymarketOrderId?: string;
   marketId?: string;
+  conditionId?: string;
   tokenId: string;
   marketCategory?: string;
   windowType?: string;
   outcomeLabel?: string;
+  side?: string;
+  orderType?: string;
+  status?: string;
   entryTs: Date;
   entryPrice: string;
   entryShares: string;
@@ -133,20 +133,22 @@ export async function createSimulatedTrade(data: {
   btcDistanceUsd?: number;
   momentumDirection?: string;
   momentumChangeUsd?: number;
-  orderbookSnapshot?: unknown;
-  raw?: unknown;
+  rawOrderResponse?: unknown;
 }) {
   const database = getDb();
   const result = await database
-    .insert(schema.simulatedTrades)
+    .insert(schema.trades)
     .values({
+      polymarketOrderId: data.polymarketOrderId || null,
       marketId: data.marketId || null,
+      conditionId: data.conditionId || null,
       tokenId: data.tokenId,
       marketCategory: data.marketCategory || null,
       windowType: data.windowType || null,
-      side: "BUY",
-      orderType: "FAK",
+      side: data.side ?? "BUY",
+      orderType: data.orderType ?? "FAK",
       outcomeLabel: data.outcomeLabel || null,
+      status: data.status ?? "PENDING",
       entryTs: data.entryTs,
       entryPrice: data.entryPrice,
       entryShares: data.entryShares,
@@ -159,26 +161,64 @@ export async function createSimulatedTrade(data: {
       btcDistanceUsd: data.btcDistanceUsd?.toString() ?? null,
       momentumDirection: data.momentumDirection || null,
       momentumChangeUsd: data.momentumChangeUsd?.toString() ?? null,
-      orderbookSnapshot: data.orderbookSnapshot as any,
-      raw: data.raw as any,
-      status: "OPEN",
+      rawOrderResponse: data.rawOrderResponse as any,
     })
     .returning();
   return result[0];
 }
 
+/** Update trade status and metadata after Polymarket trade confirmations. */
+export async function updateTradeStatus(
+  id: string,
+  updates: {
+    status?: string;
+    tradeStatus?: string;
+    polymarketTradeIds?: string[];
+    transactionHashes?: string[];
+    entryPrice?: string;
+    entryShares?: string;
+    actualCost?: string;
+    entryFees?: string;
+    rawTradeData?: unknown;
+  },
+) {
+  const database = getDb();
+  const setObj: Record<string, any> = { updatedAt: new Date() };
+  if (updates.status) setObj.status = updates.status;
+  if (updates.tradeStatus) setObj.tradeStatus = updates.tradeStatus;
+  if (updates.polymarketTradeIds)
+    setObj.polymarketTradeIds = updates.polymarketTradeIds;
+  if (updates.transactionHashes)
+    setObj.transactionHashes = updates.transactionHashes;
+  if (updates.entryPrice) setObj.entryPrice = updates.entryPrice;
+  if (updates.entryShares) setObj.entryShares = updates.entryShares;
+  if (updates.actualCost) setObj.actualCost = updates.actualCost;
+  if (updates.entryFees) setObj.entryFees = updates.entryFees;
+  if (updates.rawTradeData) setObj.rawTradeData = updates.rawTradeData;
+
+  const result = await database
+    .update(schema.trades)
+    .set(setObj)
+    .where(eq(schema.trades.id, id))
+    .returning();
+  return result[0];
+}
+
+/** Resolve/settle a trade (market resolved or stop-loss executed). */
 export async function resolveTrade(
   id: string,
-  outcome: "WIN" | "LOSS",
+  outcome: "WIN" | "LOSS" | "STOP_LOSS",
   realizedPnl: string,
   exitPrice?: string,
   minPriceDuringPosition?: string,
+  exitOrderId?: string,
+  exitFees?: string,
 ) {
   const database = getDb();
   const finalExitPrice = exitPrice ?? (outcome === "WIN" ? "1" : "0");
 
   const result = await database
-    .update(schema.simulatedTrades)
+    .update(schema.trades)
     .set({
       exitOutcome: outcome,
       exitPrice: finalExitPrice,
@@ -187,8 +227,25 @@ export async function resolveTrade(
       status: "SETTLED",
       updatedAt: new Date(),
       ...(minPriceDuringPosition != null ? { minPriceDuringPosition } : {}),
+      ...(exitOrderId != null ? { exitOrderId } : {}),
+      ...(exitFees != null ? { exitFees } : {}),
     })
-    .where(eq(schema.simulatedTrades.id, id))
+    .where(eq(schema.trades.id, id))
+    .returning();
+  return result[0];
+}
+
+/** Mark a trade as failed (order rejected, timeout, etc.). */
+export async function failTrade(id: string, errorMessage: string) {
+  const database = getDb();
+  const result = await database
+    .update(schema.trades)
+    .set({
+      status: "FAILED",
+      updatedAt: new Date(),
+      rawTradeData: { error: errorMessage } as any,
+    })
+    .where(eq(schema.trades.id, id))
     .returning();
   return result[0];
 }
@@ -220,7 +277,6 @@ export async function logAudit(
 // Portfolio helpers
 // ============================================
 
-/** Get the single portfolio row (or null if not initialised). */
 export async function getPortfolio() {
   const database = getDb();
   const rows = await database
@@ -231,10 +287,6 @@ export async function getPortfolio() {
   return rows[0] ?? null;
 }
 
-/**
- * Initialise the portfolio row if it doesn't exist.
- * If it already exists, leave it alone (allows server restarts without resetting).
- */
 export async function initPortfolio(startingCapital: number) {
   const database = getDb();
   const existing = await getPortfolio();
@@ -245,39 +297,54 @@ export async function initPortfolio(startingCapital: number) {
     .values({
       id: 1,
       initialCapital: startingCapital.toString(),
-      cashBalance: startingCapital.toString(),
+      lastKnownBalance: startingCapital.toString(),
     })
     .returning();
   return result[0];
 }
 
-/** Atomically update cash balance. */
-export async function updateCashBalance(newBalance: string) {
+/** Update the cached USDC balance from Polymarket. */
+export async function updateLastKnownBalance(newBalance: string) {
   const database = getDb();
   const result = await database
     .update(schema.portfolio)
-    .set({ cashBalance: newBalance, updatedAt: new Date() })
+    .set({
+      lastKnownBalance: newBalance,
+      balanceUpdatedAt: new Date(),
+      updatedAt: new Date(),
+    })
     .where(eq(schema.portfolio.id, 1))
     .returning();
   return result[0];
 }
 
-/**
- * Wipe all data and reset portfolio to the given starting capital.
- * Used by the admin wipe endpoint.
- */
+/** Record a balance snapshot for equity curve tracking. */
+export async function insertBalanceSnapshot(data: {
+  usdcBalance: string;
+  positionsValue: string;
+  totalValue: string;
+}) {
+  const database = getDb();
+  await database.insert(schema.balanceSnapshots).values({
+    usdcBalance: data.usdcBalance,
+    positionsValue: data.positionsValue,
+    totalValue: data.totalValue,
+  });
+}
+
+/** Wipe all data and reset portfolio. */
 export async function wipeAndResetPortfolio(startingCapital: number) {
   const database = getDb();
-  await database.delete(schema.simulatedTrades);
+  await database.delete(schema.trades);
+  await database.delete(schema.balanceSnapshots);
   await database.delete(schema.auditLogs);
   await database.delete(schema.portfolio);
-  // Re-create portfolio with fresh capital
   const result = await database
     .insert(schema.portfolio)
     .values({
       id: 1,
       initialCapital: startingCapital.toString(),
-      cashBalance: startingCapital.toString(),
+      lastKnownBalance: startingCapital.toString(),
     })
     .returning();
   return result[0];

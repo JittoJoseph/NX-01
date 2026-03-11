@@ -1,5 +1,5 @@
 {
-  "id": "2bc31d6b-1dc8-47c9-8ee0-30fcd36cb728",
+  "id": "2cb8353a-1b84-40e3-89b7-d1b979de1ad9",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -100,6 +100,66 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.balance_snapshots": {
+      "name": "balance_snapshots",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "usdc_balance": {
+          "name": "usdc_balance",
+          "type": "numeric(18, 8)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "positions_value": {
+          "name": "positions_value",
+          "type": "numeric(18, 8)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "total_value": {
+          "name": "total_value",
+          "type": "numeric(18, 8)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "snapshot_at": {
+          "name": "snapshot_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "bs_snapshot_at_idx": {
+          "name": "bs_snapshot_at_idx",
+          "columns": [
+            {
+              "expression": "snapshot_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "public.markets": {
       "name": "markets",
       "schema": "",
@@ -163,6 +223,27 @@
           "type": "numeric(18, 2)",
           "primaryKey": false,
           "notNull": false
+        },
+        "neg_risk": {
+          "name": "neg_risk",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "tick_size": {
+          "name": "tick_size",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "'0.01'"
+        },
+        "fees_enabled": {
+          "name": "fees_enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
         },
         "active": {
           "name": "active",
@@ -285,11 +366,18 @@
           "primaryKey": false,
           "notNull": true
         },
-        "cash_balance": {
-          "name": "cash_balance",
+        "last_known_balance": {
+          "name": "last_known_balance",
           "type": "numeric(18, 8)",
           "primaryKey": false,
           "notNull": true
+        },
+        "balance_updated_at": {
+          "name": "balance_updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
         },
         "created_at": {
           "name": "created_at",
@@ -314,8 +402,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.simulated_trades": {
-      "name": "simulated_trades",
+    "public.trades": {
+      "name": "trades",
       "schema": "",
       "columns": {
         "id": {
@@ -324,8 +412,32 @@
           "primaryKey": true,
           "notNull": true
         },
+        "polymarket_order_id": {
+          "name": "polymarket_order_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "polymarket_trade_ids": {
+          "name": "polymarket_trade_ids",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "transaction_hashes": {
+          "name": "transaction_hashes",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "market_id": {
           "name": "market_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "condition_id": {
+          "name": "condition_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -348,6 +460,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "outcome_label": {
+          "name": "outcome_label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "side": {
           "name": "side",
           "type": "text",
@@ -355,48 +473,55 @@
           "notNull": true,
           "default": "'BUY'"
         },
-        "outcome_label": {
-          "name": "outcome_label",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "order_type": {
           "name": "order_type",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "default": "'LIMIT_GTC'"
+          "default": "'FAK'"
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'PENDING'"
+        },
+        "trade_status": {
+          "name": "trade_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "entry_ts": {
           "name": "entry_ts",
           "type": "timestamp",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "entry_price": {
           "name": "entry_price",
           "type": "numeric(18, 8)",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "entry_shares": {
           "name": "entry_shares",
           "type": "numeric(18, 8)",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "position_budget": {
           "name": "position_budget",
           "type": "numeric(18, 8)",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "actual_cost": {
           "name": "actual_cost",
           "type": "numeric(18, 8)",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "entry_fees": {
           "name": "entry_fees",
@@ -409,8 +534,7 @@
           "name": "fill_status",
           "type": "text",
           "primaryKey": false,
-          "notNull": false,
-          "default": "'FULL'"
+          "notNull": false
         },
         "btc_price_at_entry": {
           "name": "btc_price_at_entry",
@@ -460,27 +584,39 @@
           "primaryKey": false,
           "notNull": false
         },
+        "exit_order_id": {
+          "name": "exit_order_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "exit_fees": {
+          "name": "exit_fees",
+          "type": "numeric(18, 8)",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "'0'"
+        },
         "realized_pnl": {
           "name": "realized_pnl",
           "type": "numeric(18, 8)",
           "primaryKey": false,
           "notNull": false
         },
-        "status": {
-          "name": "status",
-          "type": "text",
+        "min_price_during_position": {
+          "name": "min_price_during_position",
+          "type": "numeric(18, 8)",
           "primaryKey": false,
-          "notNull": true,
-          "default": "'OPEN'"
+          "notNull": false
         },
-        "orderbook_snapshot": {
-          "name": "orderbook_snapshot",
+        "raw_order_response": {
+          "name": "raw_order_response",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },
-        "raw": {
-          "name": "raw",
+        "raw_trade_data": {
+          "name": "raw_trade_data",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
@@ -501,8 +637,8 @@
         }
       },
       "indexes": {
-        "st_market_id_idx": {
-          "name": "st_market_id_idx",
+        "trades_market_id_idx": {
+          "name": "trades_market_id_idx",
           "columns": [
             {
               "expression": "market_id",
@@ -516,8 +652,8 @@
           "method": "btree",
           "with": {}
         },
-        "st_status_idx": {
-          "name": "st_status_idx",
+        "trades_status_idx": {
+          "name": "trades_status_idx",
           "columns": [
             {
               "expression": "status",
@@ -531,8 +667,8 @@
           "method": "btree",
           "with": {}
         },
-        "st_entry_ts_idx": {
-          "name": "st_entry_ts_idx",
+        "trades_entry_ts_idx": {
+          "name": "trades_entry_ts_idx",
           "columns": [
             {
               "expression": "entry_ts",
@@ -546,8 +682,23 @@
           "method": "btree",
           "with": {}
         },
-        "uq_open_trade_per_market_token": {
-          "name": "uq_open_trade_per_market_token",
+        "trades_poly_order_idx": {
+          "name": "trades_poly_order_idx",
+          "columns": [
+            {
+              "expression": "polymarket_order_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_active_trade_per_market_token": {
+          "name": "uq_active_trade_per_market_token",
           "columns": [
             {
               "expression": "market_id",
@@ -563,7 +714,7 @@
             }
           ],
           "isUnique": true,
-          "where": "status = 'OPEN'",
+          "where": "status IN ('PENDING','MATCHED','CONFIRMED')",
           "concurrently": false,
           "method": "btree",
           "with": {}

@@ -6,15 +6,24 @@
 // Trade types
 // ============================================
 
-export interface SimulatedTrade {
+export interface Trade {
   id: string;
+  // Polymarket references
+  polymarketOrderId: string | null;
+  polymarketTradeIds: string[] | null;
+  transactionHashes: string[] | null;
   marketId: string | null;
+  conditionId: string | null;
   tokenId: string | null;
   marketCategory: string | null;
   windowType: string | null;
   side: string;
   outcomeLabel: string | null;
   orderType: string;
+  // Order lifecycle: PENDING → MATCHED → CONFIRMED → SETTLED / FAILED
+  status: string;
+  /** Polymarket trade status: MATCHED | MINED | CONFIRMED | RETRYING | FAILED */
+  tradeStatus: string | null;
   entryTs: string;
   entryPrice: string;
   entryShares: string;
@@ -34,10 +43,12 @@ export interface SimulatedTrade {
   exitPrice: string | null;
   exitTs: string | null;
   exitOutcome: string | null;
+  exitOrderId: string | null;
+  exitFees: string | null;
   realizedPnl: string | null;
-  status: string;
-  orderbookSnapshot: unknown;
-  raw: unknown;
+  minPriceDuringPosition: string | null;
+  rawOrderResponse: unknown;
+  rawTradeData: unknown;
   createdAt: string;
   updatedAt: string;
   /** Market end date (ISO string) joined from markets table — used for WINDOW column display */
@@ -46,8 +57,6 @@ export interface SimulatedTrade {
   marketSlug: string | null;
   /** Market question joined from markets table */
   marketQuestion: string | null;
-  /** Lowest bestBid observed while position was open (before window close) */
-  minPriceDuringPosition: string | null;
 }
 
 // ============================================
@@ -119,14 +128,10 @@ export interface SystemStats {
     startingCapital: number;
     maxPositions: number;
     minBtcDistanceUsd: number;
-    stopLossEnabled: boolean;
     stopLossPriceTrigger: number;
-    momentumEnabled?: boolean;
-    momentumLookbackMs?: number;
-    momentumMinChangeUsd?: number;
   };
   portfolio?: {
-    cashBalance: number;
+    lastKnownBalance: number;
     initialCapital: number;
     openPositionsValue: number;
   };
@@ -154,7 +159,7 @@ export interface ActivityEntry {
   detail: string;
   ts: number; // wall-clock ms
   /** Optional trade data for TRADE_* kinds */
-  trade?: SimulatedTrade;
+  trade?: Trade;
   /** PnL for TRADE_WIN / TRADE_LOSS */
   pnl?: number;
 }
@@ -203,14 +208,14 @@ export interface PerformanceMetrics {
   avgBtcDistance: string;
   openPositions: number;
   unrealizedPnl: string;
-  cashBalance: string;
+  lastKnownBalance: string;
   initialCapital: string;
   openPositionsValue: string;
 }
 
 export interface PortfolioState {
   initialCapital: number;
-  cashBalance: number;
+  lastKnownBalance: number;
   openPositionsValue: number;
   portfolioValue: number;
   roi: number;
@@ -284,16 +289,6 @@ export interface AuditLog {
   message: string;
   metadata: Record<string, unknown> | null;
   createdAt: string;
-}
-
-// ============================================
-// API response types — backend returns arrays directly
-// ============================================
-
-export interface HealthResponse {
-  status: string;
-  uptime: number;
-  [key: string]: unknown;
 }
 
 // ============================================

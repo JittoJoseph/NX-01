@@ -27,8 +27,8 @@ export interface PerformanceMetrics {
   avgBtcDistance: string;
   openPositions: number;
   unrealizedPnl: string;
-  /** Current cash balance from portfolio */
-  cashBalance: string;
+  /** Last known USDC.e balance from Polymarket */
+  lastKnownBalance: string;
   /** Initial capital from portfolio */
   initialCapital: string;
   /** Estimated open positions value (needs live prices — computed by caller) */
@@ -59,13 +59,13 @@ export async function calculatePortfolioPerformance(
   // Build conditions
   const conditions = [];
   if (periodStart) {
-    conditions.push(gte(schema.simulatedTrades.entryTs, periodStart));
+    conditions.push(gte(schema.trades.entryTs, periodStart));
   }
 
   const baseQuery = db
     .select()
-    .from(schema.simulatedTrades)
-    .orderBy(desc(schema.simulatedTrades.entryTs));
+    .from(schema.trades)
+    .orderBy(desc(schema.trades.entryTs));
 
   const trades =
     conditions.length > 0
@@ -74,8 +74,8 @@ export async function calculatePortfolioPerformance(
 
   // Load portfolio state for ROI calculation
   const portfolio = await getPortfolio();
-  const cashBalance = portfolio
-    ? new Decimal(portfolio.cashBalance)
+  const lastKnownBalance = portfolio
+    ? new Decimal(portfolio.lastKnownBalance)
     : new Decimal(0);
   const initialCapital = portfolio
     ? new Decimal(portfolio.initialCapital)
@@ -97,7 +97,7 @@ export async function calculatePortfolioPerformance(
   let unrealizedPnl = new Decimal(0);
 
   for (const trade of trades) {
-    const cost = new Decimal(trade.actualCost);
+    const cost = new Decimal(trade.actualCost ?? "0");
     totalDeployed = totalDeployed.plus(cost);
     totalFees = totalFees.plus(new Decimal(trade.entryFees ?? "0"));
 
@@ -120,8 +120,8 @@ export async function calculatePortfolioPerformance(
       if (livePriceMap && trade.tokenId) {
         const currentPrice = livePriceMap.get(trade.tokenId);
         if (currentPrice !== undefined) {
-          const entryPrice = parseFloat(trade.entryPrice);
-          const shares = parseFloat(trade.entryShares);
+          const entryPrice = parseFloat(trade.entryPrice ?? "0");
+          const shares = parseFloat(trade.entryShares ?? "0");
           const fees = parseFloat(trade.entryFees ?? "0");
           const uPnl = (currentPrice - entryPrice) * shares - fees;
           unrealizedPnl = unrealizedPnl.plus(uPnl);
@@ -141,7 +141,7 @@ export async function calculatePortfolioPerformance(
     closedTrades > 0 ? ((wins / closedTrades) * 100).toFixed(2) : "0.00";
 
   // ROI = (portfolioValue - initialCapital) / initialCapital × 100
-  const portfolioValue = cashBalance.plus(positionsValue);
+  const portfolioValue = lastKnownBalance.plus(positionsValue);
   const roi = initialCapital.gt(0)
     ? portfolioValue
         .minus(initialCapital)
@@ -174,7 +174,7 @@ export async function calculatePortfolioPerformance(
     avgBtcDistance,
     openPositions,
     unrealizedPnl: unrealizedPnl.toFixed(6),
-    cashBalance: cashBalance.toFixed(2),
+    lastKnownBalance: lastKnownBalance.toFixed(2),
     initialCapital: initialCapital.toFixed(2),
     openPositionsValue: positionsValue.toFixed(2),
   };

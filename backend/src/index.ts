@@ -4,13 +4,15 @@ import { connectDatabase } from "./db/client.js";
 import { getBtcPriceWatcher } from "./services/btc-price-watcher.js";
 import { getMarketOrchestrator } from "./services/market-orchestrator.js";
 import { getApiServer } from "./services/api-server.js";
+import { tradingClient } from "./services/polymarket-trading-client.js";
+import { positionTracker } from "./services/position-tracker.js";
 
 const logger = createModuleLogger("main");
 
 async function main(): Promise<void> {
   logger.info("═══════════════════════════════════════════");
-  logger.info("  PenguinX BTC Analysis — v3.0");
-  logger.info("  End-of-Window Micro-Profit Strategy");
+  logger.info("  PenguinX BTC Trading — v4.0");
+  logger.info("  Real Polymarket Order Execution");
   logger.info("═══════════════════════════════════════════");
 
   // 1. Load and validate configuration
@@ -22,11 +24,7 @@ async function main(): Promise<void> {
       maxEntryPrice: config.strategy.maxEntryPrice,
       tradeWindowSec: config.strategy.tradeFromWindowSeconds,
       startingCapital: config.portfolio.startingCapital,
-      maxPositions: config.strategy.maxSimultaneousPositions,
-      minBtcDistance: config.strategy.minBtcDistanceUsd,
-      stopLoss: config.strategy.stopLossEnabled
-        ? config.strategy.stopLossPriceTrigger
-        : "disabled",
+      stopLoss: config.strategy.stopLossPriceTrigger,
     },
     "Configuration loaded",
   );
@@ -34,16 +32,30 @@ async function main(): Promise<void> {
   // 2. Connect to database
   await connectDatabase();
 
-  // 3. Start BTC price watcher (RTDS WebSocket)
+  // 3. Initialize Polymarket trading client (authenticated SDK)
+  await tradingClient.init(config);
+  tradingClient.startHeartbeat();
+  logger.info("Polymarket trading client initialized with heartbeat");
+
+  // 4. Start position tracker (User WS channel for trade updates)
+  positionTracker.init({
+    apiKey: config.polymarket.apiKey,
+    apiSecret: config.polymarket.apiSecret,
+    apiPassphrase: config.polymarket.apiPassphrase,
+  });
+  positionTracker.connect();
+  logger.info("Position tracker connected to User WS channel");
+
+  // 5. Start BTC price watcher (RTDS WebSocket)
   const btcWatcher = getBtcPriceWatcher();
   btcWatcher.start();
   logger.info("BTC price watcher started");
 
-  // 4. Start market orchestrator (scanner + WS + strategy + execution)
+  // 6. Start market orchestrator (scanner + WS + strategy + execution)
   const orchestrator = getMarketOrchestrator();
   await orchestrator.start();
 
-  // 5. Start API server
+  // 7. Start API server
   const apiServer = getApiServer();
   await apiServer.start();
 
@@ -57,6 +69,8 @@ async function main(): Promise<void> {
       apiServer.stop();
       orchestrator.stop();
       btcWatcher.stop();
+      tradingClient.stopHeartbeat();
+      positionTracker.disconnect();
     } catch (err) {
       logger.error({ err }, "Error during shutdown");
     }

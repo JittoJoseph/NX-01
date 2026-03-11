@@ -3,6 +3,7 @@ import { createModuleLogger } from "../utils/logger.js";
 import { getConfig } from "../utils/config.js";
 import {
   WINDOW_CONFIGS,
+  DEFAULTS,
   type GammaMarket,
   type WindowConfig,
 } from "../types/index.js";
@@ -58,7 +59,7 @@ export class MarketScanner extends EventEmitter {
         window: config.strategy.marketWindow,
         slugPrefix: windowConfig.slugPrefix,
         durationMs: windowConfig.durationMs,
-        scanIntervalMs: config.strategy.scanIntervalMs,
+        scanIntervalMs: DEFAULTS.SCAN_INTERVAL_MS,
         lookahead: MarketScanner.LOOKAHEAD_WINDOWS,
         lookbehind: MarketScanner.LOOKBEHIND_WINDOWS,
       },
@@ -73,7 +74,7 @@ export class MarketScanner extends EventEmitter {
       this.scan().catch((err) =>
         logger.error({ error: err }, "Scan iteration failed"),
       );
-    }, config.strategy.scanIntervalMs);
+    }, DEFAULTS.SCAN_INTERVAL_MS);
   }
 
   stop(): void {

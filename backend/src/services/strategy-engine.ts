@@ -3,6 +3,7 @@ import { createModuleLogger } from "../utils/logger.js";
 import { getConfig } from "../utils/config.js";
 import type { BtcPriceData } from "../interfaces/websocket-types.js";
 import type { MomentumSignal } from "../types/index.js";
+import { DEFAULTS } from "../types/index.js";
 
 const logger = createModuleLogger("strategy-engine");
 
@@ -149,16 +150,16 @@ export class StrategyEngine extends EventEmitter {
       market.targetPrice,
     );
 
-    if (btcDistanceUsd < config.strategy.minBtcDistanceUsd) {
+    if (btcDistanceUsd < DEFAULTS.MIN_BTC_DISTANCE_USD) {
       logger.debug(
-        { tokenId, btcDistanceUsd, min: config.strategy.minBtcDistanceUsd },
+        { tokenId, btcDistanceUsd, min: DEFAULTS.MIN_BTC_DISTANCE_USD },
         "Skipping: BTC too close to target",
       );
       return;
     }
 
     // ── Momentum Filter ───────────────────────────────────────────────────────
-    if (config.strategy.momentumEnabled && momentumSignal !== null) {
+    if (momentumSignal !== null) {
       const skip = this.checkMomentumFilter(
         market.outcomeLabel,
         momentumSignal,
@@ -168,8 +169,7 @@ export class StrategyEngine extends EventEmitter {
     }
     // ─────────────────────────────────────────────────────────────────────────
 
-    if (this.openPositionCount >= config.strategy.maxSimultaneousPositions)
-      return;
+    if (this.openPositionCount >= DEFAULTS.MAX_SIMULTANEOUS_POSITIONS) return;
 
     const opportunity: MarketOpportunity = {
       marketId: market.marketId,

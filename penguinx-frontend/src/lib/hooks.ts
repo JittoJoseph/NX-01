@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { getApiClient, getWsClient } from "./api-client";
 import { formatPnl } from "./utils";
 import type {
-  SimulatedTrade,
+  Trade,
   SystemStats,
   LiveMarketInfo,
   DiscoveredMarket,
@@ -25,7 +25,7 @@ import type {
 const PAGE_SIZE = 25;
 
 export function useTrades(status?: string) {
-  const [trades, setTrades] = useState<SimulatedTrade[]>([]);
+  const [trades, setTrades] = useState<Trade[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
@@ -87,7 +87,7 @@ export function useTrades(status?: string) {
     ws.connect();
 
     const unsubOpened = ws.on("tradeOpened", (msg: WsMessage) => {
-      const trade = (msg.data as { trade?: SimulatedTrade })?.trade;
+      const trade = (msg.data as { trade?: Trade })?.trade;
       if (!trade) return;
       setTrades((prev) => {
         // Avoid dupes
@@ -97,7 +97,7 @@ export function useTrades(status?: string) {
     });
 
     const unsubResolved = ws.on("tradeResolved", (msg: WsMessage) => {
-      const trade = (msg.data as { trade?: SimulatedTrade })?.trade;
+      const trade = (msg.data as { trade?: Trade })?.trade;
       if (!trade) return;
       setTrades((prev) => prev.map((t) => (t.id === trade.id ? trade : t)));
     });
@@ -284,18 +284,18 @@ export function usePerformanceRealtime(
 
     // Handle tradeOpened: increment open positions, deduct cost from cash, add to investedAmount
     const unsubOpened = ws.on("tradeOpened", (msg: WsMessage) => {
-      const trade = (msg.data as any)?.trade as SimulatedTrade | undefined;
+      const trade = (msg.data as any)?.trade as Trade | undefined;
       if (!trade) return;
 
       setPerformance((prev) => {
         if (!prev) return prev;
         const actualCost = parseFloat(trade.actualCost || "0");
-        const oldCash = parseFloat(prev.cashBalance || "0");
+        const oldCash = parseFloat(prev.lastKnownBalance || "0");
         const oldPositionsValue = parseFloat(prev.openPositionsValue || "0");
         return {
           ...prev,
           openPositions: prev.openPositions + 1,
-          cashBalance: Math.max(0, oldCash - actualCost).toFixed(2),
+          lastKnownBalance: Math.max(0, oldCash - actualCost).toFixed(2),
           openPositionsValue: (oldPositionsValue + actualCost).toFixed(2),
         };
       });
@@ -304,7 +304,7 @@ export function usePerformanceRealtime(
     // Handle tradeResolved: update wins/losses, PnL, and derived metrics
     const unsubResolved = ws.on("tradeResolved", (msg: WsMessage) => {
       const d = msg.data as any;
-      const trade = d?.trade as SimulatedTrade | undefined;
+      const trade = d?.trade as Trade | undefined;
       const isWin = d?.isWin as boolean | undefined;
       const pnl = typeof d?.pnl === "number" ? (d.pnl as number) : 0;
 
@@ -324,8 +324,8 @@ export function usePerformanceRealtime(
 
         // When a trade settles, cash is returned (actualCost) + pnl added back
         const actualCost = parseFloat(trade.actualCost || "0");
-        const oldCashBalance = parseFloat(prev.cashBalance || "0");
-        const newCashBalance = oldCashBalance + actualCost + pnl;
+        const oldBalance = parseFloat(prev.lastKnownBalance || "0");
+        const newBalance = oldBalance + actualCost + pnl;
 
         // Reduce open positions value by the cost that was deployed
         const oldOpenPositionsValue = parseFloat(
@@ -337,9 +337,8 @@ export function usePerformanceRealtime(
         );
 
         // ROI = (portfolioValue - initialCapital) / initialCapital × 100
-        // (same formula as the backend performance-calculator)
         const initialCapital = parseFloat(prev.initialCapital || "0");
-        const newPortfolioValue = newCashBalance + newOpenPositionsValue;
+        const newPortfolioValue = newBalance + newOpenPositionsValue;
         const newRoi =
           initialCapital > 0
             ? ((newPortfolioValue - initialCapital) / initialCapital) * 100
@@ -367,7 +366,7 @@ export function usePerformanceRealtime(
           wins: newWins,
           losses: newLosses,
           winRate: newWinRate,
-          cashBalance: newCashBalance.toFixed(2),
+          lastKnownBalance: newBalance.toFixed(2),
           openPositionsValue: newOpenPositionsValue.toFixed(2),
           largestWin: newBestTrade.toFixed(4),
           largestLoss: newWorstTrade.toFixed(4),
@@ -394,7 +393,7 @@ export function usePerformanceRealtime(
  * - Returns the sum of all unrealized PnLs across open positions
  */
 export function useUnrealizedPnL(
-  trades: SimulatedTrade[],
+  trades: Trade[],
   liveMarkets: LiveMarketInfo[],
 ): number {
   return useMemo(() => {
@@ -695,7 +694,7 @@ export function useActivityLog() {
     ws.connect();
 
     const unsubOpened = ws.on("tradeOpened", (msg: WsMessage) => {
-      const trade = (msg.data as any)?.trade as SimulatedTrade | undefined;
+      const trade = (msg.data as any)?.trade as Trade | undefined;
       if (!trade) return;
       const id = `opened-${trade.id}`;
       if (seenIds.current.has(id)) return;
@@ -726,7 +725,7 @@ export function useActivityLog() {
     // Real-time: tradeResolved
     const unsubResolved = ws.on("tradeResolved", (msg: WsMessage) => {
       const d = msg.data as any;
-      const trade = d?.trade as SimulatedTrade | undefined;
+      const trade = d?.trade as Trade | undefined;
       const isWin = d?.isWin as boolean | undefined;
       const pnl = typeof d?.pnl === "number" ? (d.pnl as number) : undefined;
 

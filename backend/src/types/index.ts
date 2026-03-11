@@ -68,6 +68,27 @@ export const POLY_URLS = {
   CLOB_BASE: "https://clob.polymarket.com",
   CLOB_WS: "wss://ws-subscriptions-clob.polymarket.com/ws/market",
   RTDS_WS: "wss://ws-live-data.polymarket.com",
+  DATA_API_BASE: "https://data-api.polymarket.com",
+  USER_WS: "wss://ws-subscriptions-clob.polymarket.com/ws/user",
+  POLYGON_RPC: "https://polygon-rpc.com",
+} as const;
+
+// CTF (Conditional Tokens Framework) contract addresses on Polygon
+export const CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045";
+export const USDC_E_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
+
+// ============================================
+// Hardcoded operational defaults (not worth env vars)
+// ============================================
+
+export const DEFAULTS = {
+  HOST: "0.0.0.0",
+  LOG_LEVEL: "info" as const,
+  SCAN_INTERVAL_MS: 60_000,
+  MAX_SIMULTANEOUS_POSITIONS: 5,
+  MIN_BTC_DISTANCE_USD: 50,
+  MOMENTUM_LOOKBACK_MS: 90_000,
+  MOMENTUM_MIN_CHANGE_USD: 20,
 } as const;
 
 // ============================================
@@ -85,19 +106,6 @@ export interface MomentumSignal {
   hasData: boolean;
 }
 
-// ============================================
-// Fee Constants (from Polymarket docs)
-// For 5-Min & 15-Min Crypto markets:
-//   fee = C × feeRate × (p × (1-p))^exponent
-//   feeRate = 0.25, exponent = 2, maker rebate = 20%
-// ============================================
-
-export const CRYPTO_FEE = {
-  RATE: 0.25,
-  EXPONENT: 2,
-  MAKER_REBATE_PERCENT: 0.2,
-} as const;
-
 /**
  * Polymarket protocol minimum order size (in shares).
  * Returned by the CLOB orderbook API as `min_order_size`.
@@ -113,6 +121,12 @@ export const ConfigSchema = z.object({
   db: z.object({
     url: z.string(),
   }),
+  polymarket: z.object({
+    privateKey: z.string().min(1),
+    apiKey: z.string().min(1),
+    apiSecret: z.string().min(1),
+    apiPassphrase: z.string().min(1),
+  }),
   portfolio: z.object({
     startingCapital: z.number().min(1).max(10_000_000),
   }),
@@ -121,27 +135,14 @@ export const ConfigSchema = z.object({
     tradeFromWindowSeconds: z.number().min(5).max(600),
     entryPriceThreshold: z.number().min(0.5).max(0.99),
     maxEntryPrice: z.number().min(0.5).max(0.99),
-    maxSimultaneousPositions: z.number().min(1).max(100),
-    minBtcDistanceUsd: z.number().min(0).max(100000),
-    scanIntervalMs: z.number().min(10000),
-    stopLossEnabled: z.boolean(),
     stopLossPriceTrigger: z.number().min(0.01).max(0.95),
-    // Momentum filter
-    momentumEnabled: z.boolean(),
-    momentumLookbackMs: z.number().min(10_000).max(600_000),
-    momentumMinChangeUsd: z.number().min(0).max(1000),
   }),
   admin: z.object({
     password: z.string().min(1),
   }),
   server: z.object({
     port: z.number().min(1).max(65535),
-    host: z.string(),
   }),
-  logging: z.object({
-    level: z.enum(["trace", "debug", "info", "warn", "error", "fatal"]),
-  }),
-  env: z.enum(["development", "production", "test"]),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -247,4 +248,94 @@ export interface ApiResponse<T> {
   success: boolean;
   data?: T;
   error?: { code: string; message: string; retryAfter?: number };
+}
+
+// ============================================
+// Polymarket Trading Types
+// ============================================
+
+/** Order lifecycle status in our system */
+export type TradeStatus =
+  | "PENDING"
+  | "MATCHED"
+  | "CONFIRMED"
+  | "SETTLED"
+  | "FAILED";
+
+/** Polymarket trade status from User WS channel */
+export type PolymarketTradeStatus =
+  | "MATCHED"
+  | "MINED"
+  | "CONFIRMED"
+  | "RETRYING"
+  | "FAILED";
+
+/** Result from placing a real order via the CLOB SDK */
+export interface OrderResult {
+  success: boolean;
+  orderID?: string;
+  /** Shares filled immediately (FAK partial fill) */
+  filledShares?: number;
+  /** Average fill price */
+  avgPrice?: number;
+  /** Total cost including fees */
+  totalCost?: number;
+  /** Raw response from Polymarket */
+  rawResponse?: Record<string, unknown>;
+  /** Error message if failed */
+  errorMessage?: string;
+}
+
+/** User WS channel trade update payload */
+export interface UserTradeUpdate {
+  asset_id: string;
+  associate_trades: Array<{
+    id: string;
+    status: PolymarketTradeStatus;
+    match_time: string;
+    last_update: string;
+    outcome: string;
+    maker_address: string;
+    market: string;
+    owner: string;
+    price: string;
+    side: string;
+    size: string;
+    fee_rate_bps: string;
+    transaction_hash?: string;
+    bucket_index?: string;
+    type: string;
+  }>;
+  id: string;
+  market: string;
+  original_size: string;
+  outcome: string;
+  owner: string;
+  price: string;
+  side: string;
+  size_matched: string;
+  status: string;
+  timestamp: string;
+  type: string;
+}
+
+/** Data API position response */
+export interface PolymarketPosition {
+  asset: string;
+  conditionId: string;
+  curPrice: number;
+  currentValue: number;
+  initialValue: number;
+  percentPnl: number;
+  pnl: number;
+  realizedPnl: number;
+  size: number;
+  avgPrice: number;
+  unrealizedPnl: number;
+}
+
+/** Balance & allowance from CLOB API */
+export interface BalanceAllowance {
+  balance: string;
+  allowance: string;
 }
