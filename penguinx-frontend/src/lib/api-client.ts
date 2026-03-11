@@ -14,9 +14,9 @@ import type {
 } from "./types";
 
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "https://nx-01-hbgk.onrender.com";
+  process.env.NEXT_PUBLIC_API_BASE_URL || "https://nx-01-abur.onrender.com";
 const WS_BASE_URL =
-  process.env.NEXT_PUBLIC_WS_BASE_URL || "wss://nx-01-hbgk.onrender.com";
+  process.env.NEXT_PUBLIC_WS_BASE_URL || "wss://nx-01-abur.onrender.com";
 
 async function fetchWithRetry<T>(
   url: string,

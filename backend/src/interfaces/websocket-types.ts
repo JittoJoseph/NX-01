@@ -101,6 +101,7 @@ export interface MarketSubscriptionMessage {
 export interface SubscriptionUpdateMessage {
   assets_ids: string[];
   operation: "subscribe" | "unsubscribe";
+  custom_feature_enabled?: boolean;
 }
 
 /** RTDS real-time BTC price message */

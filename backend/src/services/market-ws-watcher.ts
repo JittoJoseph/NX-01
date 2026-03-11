@@ -74,13 +74,18 @@ export class MarketWebSocketWatcher extends EventEmitter {
     newTokens.forEach((id) => this.subscribedTokens.add(id));
 
     if (this.ws?.readyState === WebSocket.OPEN) {
-      const msg: MarketSubscriptionMessage = {
+      // Use dynamic subscription update format to ADD tokens
+      // without replacing the existing subscription.
+      const msg: SubscriptionUpdateMessage = {
         assets_ids: newTokens,
-        type: "market",
+        operation: "subscribe",
         custom_feature_enabled: true,
       };
       this.ws.send(JSON.stringify(msg));
-      logger.info({ count: newTokens.length }, "Subscribed to new tokens");
+      logger.info(
+        { count: newTokens.length },
+        "Subscribed to new tokens (incremental)",
+      );
     }
   }
 
@@ -203,6 +208,32 @@ export class MarketWebSocketWatcher extends EventEmitter {
             hash: msg.hash ?? "",
             timestamp: ts,
           } satisfies OrderbookUpdateEvent);
+
+          // Extract best bid/ask from the snapshot to seed initial prices.
+          // Without this, newly subscribed tokens have no price data until
+          // the next price_change or best_bid_ask event arrives.
+          const topBid =
+            msg.bids.length > 0
+              ? msg.bids.reduce((best, b) =>
+                  parseFloat(b.price) > parseFloat(best.price) ? b : best,
+                )
+              : null;
+          const topAsk =
+            msg.asks.length > 0
+              ? msg.asks.reduce((best, a) =>
+                  parseFloat(a.price) < parseFloat(best.price) ? a : best,
+                )
+              : null;
+          if (topBid && topAsk) {
+            this.emit("priceUpdate", {
+              tokenId: msg.asset_id,
+              bestBid: topBid.price,
+              bestAsk: topAsk.price,
+              midpoint:
+                (parseFloat(topBid.price) + parseFloat(topAsk.price)) / 2,
+              timestamp: ts,
+            } satisfies PriceUpdateEvent);
+          }
         }
         break;
 
