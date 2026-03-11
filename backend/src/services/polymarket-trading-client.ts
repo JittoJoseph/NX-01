@@ -84,8 +84,22 @@ class PolymarketTradingClient {
     try {
       const resp = await this.getClient().postHeartbeat(this.heartbeatId);
       this.heartbeatId = resp.heartbeat_id;
-    } catch (err) {
-      logger.error({ error: err }, "Heartbeat failed — orders may be canceled");
+    } catch (err: unknown) {
+      // Polymarket returns 400 with the correct heartbeat_id when ours is
+      // invalid or expired. Extract it so the next call succeeds.
+      const errData = (err as { data?: { heartbeat_id?: string } })?.data;
+      if (errData?.heartbeat_id) {
+        this.heartbeatId = errData.heartbeat_id;
+        logger.warn(
+          { recoveredId: this.heartbeatId },
+          "Heartbeat ID was invalid — recovered from error response",
+        );
+      } else {
+        logger.error(
+          { error: err },
+          "Heartbeat failed — orders may be canceled",
+        );
+      }
     }
   }
 

@@ -28,6 +28,7 @@ class PositionTracker {
   private apiSecret: string = "";
   private apiPassphrase: string = "";
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
   private onTradeUpdate: TradeCallback | null = null;
 
   /** Map of polymarket order ID → our internal trade ID for lookups. */
@@ -70,11 +71,21 @@ class PositionTracker {
         logger.info("User WS channel connected");
         // Authenticate + subscribe using the documented User Channel format
         this.sendSubscription();
+
+        // User channel requires PING every 10s to stay alive
+        this.pingTimer = setInterval(() => {
+          if (this.ws?.readyState === WebSocket.OPEN) {
+            this.ws.send("PING");
+          }
+        }, 10_000);
       });
 
       this.ws.on("message", (data) => {
         try {
-          const msg = JSON.parse(data.toString());
+          const text = data.toString();
+          // PONG is a text response to our PING keepalive
+          if (text === "PONG") return;
+          const msg = JSON.parse(text);
           this.handleMessage(msg);
         } catch {
           // Ignore unparseable messages
@@ -83,7 +94,7 @@ class PositionTracker {
 
       this.ws.on("close", () => {
         logger.warn("User WS channel disconnected — reconnecting in 5s");
-        this.ws = null;
+        this.cleanup();
         this.scheduleReconnect();
       });
 
@@ -101,10 +112,19 @@ class PositionTracker {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this.cleanup();
     if (this.ws) {
       this.ws.close();
       this.ws = null;
     }
+  }
+
+  private cleanup(): void {
+    if (this.pingTimer) {
+      clearInterval(this.pingTimer);
+      this.pingTimer = null;
+    }
+    this.ws = null;
   }
 
   private scheduleReconnect(): void {
