@@ -287,7 +287,7 @@ export async function getPortfolio() {
   return rows[0] ?? null;
 }
 
-export async function initPortfolio(startingCapital: number) {
+export async function initPortfolio(walletBalance: number) {
   const database = getDb();
   const existing = await getPortfolio();
   if (existing) return existing;
@@ -296,8 +296,8 @@ export async function initPortfolio(startingCapital: number) {
     .insert(schema.portfolio)
     .values({
       id: 1,
-      initialCapital: startingCapital.toString(),
-      lastKnownBalance: startingCapital.toString(),
+      initialCapital: walletBalance.toString(),
+      lastKnownBalance: walletBalance.toString(),
     })
     .returning();
   return result[0];
@@ -332,8 +332,8 @@ export async function insertBalanceSnapshot(data: {
   });
 }
 
-/** Wipe all data and reset portfolio. */
-export async function wipeAndResetPortfolio(startingCapital: number) {
+/** Wipe all data and reset portfolio with current wallet balance. */
+export async function wipeAndResetPortfolio(walletBalance: number) {
   const database = getDb();
   await database.delete(schema.trades);
   await database.delete(schema.balanceSnapshots);
@@ -343,8 +343,8 @@ export async function wipeAndResetPortfolio(startingCapital: number) {
     .insert(schema.portfolio)
     .values({
       id: 1,
-      initialCapital: startingCapital.toString(),
-      lastKnownBalance: startingCapital.toString(),
+      initialCapital: walletBalance.toString(),
+      lastKnownBalance: walletBalance.toString(),
     })
     .returning();
   return result[0];

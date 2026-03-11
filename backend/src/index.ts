@@ -23,7 +23,6 @@ async function main(): Promise<void> {
       threshold: config.strategy.entryPriceThreshold,
       maxEntryPrice: config.strategy.maxEntryPrice,
       tradeWindowSec: config.strategy.tradeFromWindowSeconds,
-      startingCapital: config.portfolio.startingCapital,
       stopLoss: config.strategy.stopLossPriceTrigger,
     },
     "Configuration loaded",

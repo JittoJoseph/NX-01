@@ -13,6 +13,9 @@ const logger = createModuleLogger("portfolio-manager");
  * Uses the real Polymarket USDC.e balance (via BalanceManager) for position sizing.
  * No local cash tracking — the on-chain balance is the source of truth.
  *
+ * On first run (or after DB wipe), the wallet balance at that moment becomes the
+ * initial capital baseline for P&L calculations. No env var needed.
+ *
  * Key rules:
  * - Position sizing = availableBalance / maxPositions
  * - Only place orders if real balance can cover the position budget
@@ -22,22 +25,23 @@ const logger = createModuleLogger("portfolio-manager");
 export class PortfolioManager {
   private initialCapital: Decimal = new Decimal(0);
 
-  /** Initialise from DB or create fresh portfolio row. */
+  /** Initialise from DB or create fresh portfolio row seeded from wallet balance. */
   async init(): Promise<void> {
-    const config = getConfig();
-    const portfolio = await initPortfolio(config.portfolio.startingCapital);
+    // Always fetch the real wallet balance first
+    const walletBalance = await balanceManager.getBalance();
+
+    // initPortfolio only inserts if no row exists — on first run it seeds
+    // initialCapital from the current wallet balance.
+    const portfolio = await initPortfolio(walletBalance);
     if (!portfolio) {
       throw new Error("Failed to initialise portfolio row");
     }
     this.initialCapital = new Decimal(portfolio.initialCapital);
 
-    // Seed balance cache from Polymarket
-    const balance = await balanceManager.getBalance();
-
     logger.info(
       {
         initialCapital: this.initialCapital.toString(),
-        realBalance: balance.toFixed(2),
+        walletBalance: walletBalance.toFixed(2),
         maxPositions: DEFAULTS.MAX_SIMULTANEOUS_POSITIONS,
       },
       "Portfolio initialised with real Polymarket balance",

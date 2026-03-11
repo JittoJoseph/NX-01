@@ -37,7 +37,6 @@ vi.mock("../utils/config.js", () => ({
       momentumLookbackMs: 90_000,
       momentumMinChangeUsd: 20,
     },
-    portfolio: { startingCapital: 100 },
     logging: { level: "silent" },
     env: "test",
   }),

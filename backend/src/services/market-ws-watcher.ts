@@ -74,9 +74,10 @@ export class MarketWebSocketWatcher extends EventEmitter {
     newTokens.forEach((id) => this.subscribedTokens.add(id));
 
     if (this.ws?.readyState === WebSocket.OPEN) {
-      const msg: SubscriptionUpdateMessage = {
+      const msg: MarketSubscriptionMessage = {
         assets_ids: newTokens,
-        operation: "subscribe",
+        type: "market",
+        custom_feature_enabled: true,
       };
       this.ws.send(JSON.stringify(msg));
       logger.info({ count: newTokens.length }, "Subscribed to new tokens");

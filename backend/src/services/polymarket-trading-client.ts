@@ -4,6 +4,7 @@ import {
   SignatureType,
   AssetType,
 } from "@polymarket/clob-client";
+import type { TickSize } from "@polymarket/clob-client";
 import { Contract, Wallet, providers, constants } from "ethers";
 import { createModuleLogger } from "../utils/logger.js";
 import {
@@ -24,7 +25,7 @@ const logger = createModuleLogger("polymarket-trading");
 class PolymarketTradingClient {
   private client: ClobClient | null = null;
   private signer: Wallet | null = null;
-  private heartbeatId: string | null = null;
+  private heartbeatId = "";
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   async init(config: Config): Promise<void> {
@@ -74,16 +75,14 @@ class PolymarketTradingClient {
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
-      this.heartbeatId = null;
+      this.heartbeatId = "";
       logger.info("Heartbeat stopped");
     }
   }
 
   private async sendHeartbeat(): Promise<void> {
     try {
-      const resp = await this.getClient().postHeartbeat(
-        this.heartbeatId ?? undefined,
-      );
+      const resp = await this.getClient().postHeartbeat(this.heartbeatId);
       this.heartbeatId = resp.heartbeat_id;
     } catch (err) {
       logger.error({ error: err }, "Heartbeat failed — orders may be canceled");
@@ -118,12 +117,15 @@ class PolymarketTradingClient {
     negRisk: boolean,
   ) {
     const client = this.getClient();
-    const order = await client.createMarketOrder({
-      tokenID: tokenId,
-      amount: amountUsd,
-      price: worstPrice,
-      side: "BUY" as any,
-    });
+    const order = await client.createMarketOrder(
+      {
+        tokenID: tokenId,
+        amount: amountUsd,
+        price: worstPrice,
+        side: "BUY" as any,
+      },
+      { tickSize: tickSize as TickSize, negRisk },
+    );
     const resp = await client.postOrder(order, "FAK" as any);
     logger.info(
       { orderID: resp?.orderID, tokenId, amountUsd, worstPrice },
@@ -141,12 +143,15 @@ class PolymarketTradingClient {
     negRisk: boolean,
   ) {
     const client = this.getClient();
-    const order = await client.createMarketOrder({
-      tokenID: tokenId,
-      amount: shares,
-      price: worstPrice,
-      side: "SELL" as any,
-    });
+    const order = await client.createMarketOrder(
+      {
+        tokenID: tokenId,
+        amount: shares,
+        price: worstPrice,
+        side: "SELL" as any,
+      },
+      { tickSize: tickSize as TickSize, negRisk },
+    );
     const resp = await client.postOrder(order, "FOK" as any);
     logger.info(
       { orderID: resp?.orderID, tokenId, shares, worstPrice },

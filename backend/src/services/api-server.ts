@@ -170,7 +170,6 @@ export class ApiServer {
             entryPriceThreshold: config.strategy.entryPriceThreshold,
             maxEntryPrice: config.strategy.maxEntryPrice,
             tradeFromWindowSeconds: config.strategy.tradeFromWindowSeconds,
-            startingCapital: config.portfolio.startingCapital,
             maxPositions: DEFAULTS.MAX_SIMULTANEOUS_POSITIONS,
             minBtcDistanceUsd: DEFAULTS.MIN_BTC_DISTANCE_USD,
             stopLossPriceTrigger: config.strategy.stopLossPriceTrigger,
@@ -347,7 +346,9 @@ export class ApiServer {
           const orchestrator = getMarketOrchestrator();
           orchestrator.pause();
 
-          await wipeAndResetPortfolio(config.portfolio.startingCapital);
+          // Use current wallet balance as the new initial capital
+          const walletBalance = await balanceManager.getBalance();
+          await wipeAndResetPortfolio(walletBalance);
 
           // Also clear markets
           const db = getDb();

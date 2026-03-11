@@ -32,6 +32,8 @@ class PositionTracker {
 
   /** Map of polymarket order ID → our internal trade ID for lookups. */
   private orderToTradeId = new Map<string, string>();
+  /** Condition IDs to subscribe to on the User WS channel. */
+  private subscribedMarkets = new Set<string>();
 
   init(creds: {
     apiKey: string;
@@ -66,15 +68,8 @@ class PositionTracker {
 
       this.ws.on("open", () => {
         logger.info("User WS channel connected");
-        // Authenticate
-        this.ws?.send(
-          JSON.stringify({
-            type: "auth",
-            apiKey: this.apiKey,
-            secret: this.apiSecret,
-            passphrase: this.apiPassphrase,
-          }),
-        );
+        // Authenticate + subscribe using the documented User Channel format
+        this.sendSubscription();
       });
 
       this.ws.on("message", (data) => {
@@ -118,6 +113,41 @@ class PositionTracker {
       this.reconnectTimer = null;
       this.connect();
     }, 5_000);
+  }
+
+  /**
+   * Send the User WS subscription message in the documented format.
+   * Includes credentials and any currently tracked market condition IDs.
+   */
+  private sendSubscription(): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+
+    const markets = Array.from(this.subscribedMarkets);
+    this.ws.send(
+      JSON.stringify({
+        auth: {
+          apiKey: this.apiKey,
+          secret: this.apiSecret,
+          passphrase: this.apiPassphrase,
+        },
+        markets,
+        type: "user",
+      }),
+    );
+    logger.debug({ marketCount: markets.length }, "Sent User WS subscription");
+  }
+
+  /** Subscribe to updates for a specific market (condition ID). */
+  subscribeMarket(conditionId: string): void {
+    if (this.subscribedMarkets.has(conditionId)) return;
+    this.subscribedMarkets.add(conditionId);
+    // Re-send subscription to include the new market
+    this.sendSubscription();
+  }
+
+  /** Unsubscribe from a specific market. */
+  unsubscribeMarket(conditionId: string): void {
+    this.subscribedMarkets.delete(conditionId);
   }
 
   private handleMessage(msg: any): void {

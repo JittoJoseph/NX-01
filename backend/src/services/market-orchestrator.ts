@@ -144,7 +144,6 @@ export class MarketOrchestrator extends EventEmitter {
         threshold: config.strategy.entryPriceThreshold,
         tradeWindowSec: config.strategy.tradeFromWindowSeconds,
         maxPositions: DEFAULTS.MAX_SIMULTANEOUS_POSITIONS,
-        startingCapital: config.portfolio.startingCapital,
       },
       "Starting market orchestrator",
     );
@@ -800,6 +799,10 @@ export class MarketOrchestrator extends EventEmitter {
       if (orderResult.orderID) {
         positionTracker.trackOrder(orderResult.orderID, tradeId);
       }
+      // Subscribe to User WS for this market's condition ID
+      if (market?.conditionId) {
+        positionTracker.subscribeMarket(market.conditionId);
+      }
 
       this.scheduleResolutionMonitor(opp.marketId);
 
@@ -1233,6 +1236,10 @@ export class MarketOrchestrator extends EventEmitter {
       // Register with position tracker for User WS updates
       if (trade.polymarketOrderId) {
         positionTracker.trackOrder(trade.polymarketOrderId, trade.id);
+      }
+      // Subscribe User WS for this market's condition ID
+      if (trade.conditionId) {
+        positionTracker.subscribeMarket(trade.conditionId);
       }
 
       // Set up resolution monitoring for existing positions

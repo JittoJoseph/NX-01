@@ -128,9 +128,6 @@ export const ConfigSchema = z.object({
     apiPassphrase: z.string().min(1),
     funderAddress: z.string().min(1),
   }),
-  portfolio: z.object({
-    startingCapital: z.number().min(1).max(10_000_000),
-  }),
   strategy: z.object({
     marketWindow: z.enum(MARKET_WINDOWS),
     tradeFromWindowSeconds: z.number().min(5).max(600),

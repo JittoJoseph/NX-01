@@ -33,13 +33,10 @@ export function loadConfig(): Config {
       apiPassphrase: env("POLYMARKET_API_PASSPHRASE"),
       funderAddress: env("POLYMARKET_FUNDER_ADDRESS"),
     },
-    portfolio: {
-      startingCapital: envNum("STARTING_CAPITAL", 100),
-    },
     strategy: {
       marketWindow: env("MARKET_WINDOW", "5M"),
       tradeFromWindowSeconds: envNum("TRADE_FROM_WINDOW_SECONDS", 90),
-      entryPriceThreshold: envNum("ENTRY_PRICE_THRESHOLD", 0.94),
+      entryPriceThreshold: envNum("ENTRY_PRICE_THRESHOLD", 0.9),
       maxEntryPrice: envNum("MAX_ENTRY_PRICE", 0.98),
       stopLossPriceTrigger: envNum("STOP_LOSS_PRICE_TRIGGER", 0.75),
     },
