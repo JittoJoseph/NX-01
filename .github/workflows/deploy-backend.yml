@@ -1,0 +1,24 @@
+name: Deploy Backend to Vultr
+
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy PenguinX Backend
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            cd /root/NX-01/backend
+            git pull origin main --rebase
+            npm ci
+            npm run build
+            pm2 reload penguinx-backend --update-env
+            pm2 save
+            echo "✅ Deploy finished at $(date)"
