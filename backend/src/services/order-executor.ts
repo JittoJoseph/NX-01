@@ -76,10 +76,11 @@ export async function executeBuyOrder(params: {
     }
 
     // Parse fill data from response
-    const makingAmount = parseFloat(resp.makingAmount || "0");
-    const takingAmount = parseFloat(resp.takingAmount || "0");
-    const filledShares = makingAmount > 0 ? makingAmount : 0;
-    const totalCost = takingAmount > 0 ? takingAmount : positionBudget;
+    // For BUY orders: makingAmount = USDC spent, takingAmount = shares received
+    const usdcSpent = parseFloat(resp.makingAmount || "0");
+    const sharesReceived = parseFloat(resp.takingAmount || "0");
+    const filledShares = sharesReceived > 0 ? sharesReceived : 0;
+    const totalCost = usdcSpent > 0 ? usdcSpent : positionBudget;
     const avgPrice =
       filledShares > 0
         ? new Decimal(totalCost).div(filledShares).toNumber()
@@ -181,17 +182,36 @@ export async function executeSellOrder(params: {
     // Invalidate balance cache since we received USDC
     balanceManager.invalidate();
 
+    // Parse actual fill data from response
+    // For SELL orders: makingAmount = shares sold, takingAmount = USDC received
+    const sharesSold = parseFloat(resp.makingAmount || "0");
+    const usdcReceived = parseFloat(resp.takingAmount || "0");
+    const filledShares = sharesSold > 0 ? sharesSold : shares;
+    const actualAvgPrice =
+      filledShares > 0 && usdcReceived > 0
+        ? new Decimal(usdcReceived).div(filledShares).toNumber()
+        : worstPrice;
+    const totalProceeds =
+      usdcReceived > 0
+        ? usdcReceived
+        : new Decimal(shares).mul(worstPrice).toNumber();
+
     logger.info(
-      { tradeId, orderID: resp.orderID, shares, worstPrice },
+      {
+        tradeId,
+        orderID: resp.orderID,
+        shares: filledShares,
+        avgPrice: actualAvgPrice,
+      },
       "SELL order executed",
     );
 
     return {
       success: true,
       orderID: resp.orderID,
-      filledShares: shares,
-      avgPrice: worstPrice,
-      totalCost: new Decimal(shares).mul(worstPrice).toNumber(),
+      filledShares,
+      avgPrice: actualAvgPrice,
+      totalCost: totalProceeds,
       rawResponse: resp,
     };
   } catch (err) {
