@@ -52,6 +52,7 @@ export async function calculatePortfolioPerformance(
   period: TimePeriod,
   livePriceMap?: Map<string, number>,
   openPositionsValue?: number,
+  liveBalance?: number,
 ): Promise<PerformanceMetrics> {
   const db = getDb();
   const periodStart = getPeriodStart(period);
@@ -74,9 +75,13 @@ export async function calculatePortfolioPerformance(
 
   // Load portfolio state for ROI calculation
   const portfolio = await getPortfolio();
-  const lastKnownBalance = portfolio
-    ? new Decimal(portfolio.lastKnownBalance)
-    : new Decimal(0);
+  // Use live balance when available; fall back to (potentially stale) DB value
+  const lastKnownBalance =
+    liveBalance != null
+      ? new Decimal(liveBalance)
+      : portfolio
+        ? new Decimal(portfolio.lastKnownBalance)
+        : new Decimal(0);
   const initialCapital = portfolio
     ? new Decimal(portfolio.initialCapital)
     : new Decimal(0);

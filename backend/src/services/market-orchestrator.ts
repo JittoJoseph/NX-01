@@ -293,7 +293,14 @@ export class MarketOrchestrator extends EventEmitter {
   computeOpenPositionsValue(): number {
     let total = 0;
     for (const pos of this.openPositions.values()) {
-      total += pos.actualCost;
+      // Use live bid price × shares for market value; fall back to cost basis
+      const state = this.activeMarkets.get(pos.marketId);
+      const livePrice = state?.lastPrices[pos.tokenId]?.bid;
+      if (livePrice != null && livePrice > 0) {
+        total += pos.entryShares * livePrice;
+      } else {
+        total += pos.actualCost;
+      }
     }
     return total;
   }
@@ -1165,6 +1172,11 @@ export class MarketOrchestrator extends EventEmitter {
       if (isWin && pos.conditionId) {
         tradingClient
           .redeemPositions(pos.conditionId)
+          .then(() => {
+            // Redeem L2 tx takes a few seconds to settle — refresh balance after delay
+            setTimeout(() => balanceManager.refresh(), 5_000);
+            setTimeout(() => balanceManager.refresh(), 15_000);
+          })
           .catch((err) =>
             logger.warn(
               { error: err, tradeId, conditionId: pos.conditionId },

@@ -306,10 +306,12 @@ export class ApiServer {
 
         const orchestrator = getMarketOrchestrator();
         const openPositionsValue = orchestrator.computeOpenPositionsValue();
+        const liveBalance = await balanceManager.getBalance();
         const metrics = await calculatePortfolioPerformance(
           period,
           undefined,
           openPositionsValue,
+          liveBalance,
         );
         res.json(metrics);
       } catch (error) {
