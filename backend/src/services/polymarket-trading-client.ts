@@ -5,38 +5,56 @@ import {
   AssetType,
 } from "@polymarket/clob-client";
 import type { TickSize } from "@polymarket/clob-client";
-import { Contract, Wallet, providers, constants } from "ethers";
+import { RelayClient, RelayerTxType } from "@polymarket/builder-relayer-client";
+import { BuilderConfig } from "@polymarket/builder-signing-sdk";
+import { createWalletClient, http, encodeFunctionData, zeroHash } from "viem";
+import type { Hex } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { polygon } from "viem/chains";
 import { createModuleLogger } from "../utils/logger.js";
-import {
-  Config,
-  POLY_URLS,
-  CTF_ADDRESS,
-  USDC_E_ADDRESS,
-  type BalanceAllowance,
-} from "../types/index.js";
+import { Config, POLY_URLS, type BalanceAllowance } from "../types/index.js";
+
+// Polymarket contract addresses on Polygon
+const CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045";
+const USDC_E_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
+const RELAYER_URL = "https://relayer-v2.polymarket.com/";
 
 const CTF_REDEEM_ABI = [
-  "function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] indexSets)",
-];
+  {
+    name: "redeemPositions",
+    type: "function",
+    inputs: [
+      { name: "collateralToken", type: "address" },
+      { name: "parentCollectionId", type: "bytes32" },
+      { name: "conditionId", type: "bytes32" },
+      { name: "indexSets", type: "uint256[]" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+] as const;
 
 const logger = createModuleLogger("polymarket-trading");
 
 /** Singleton wrapper around @polymarket/clob-client for authenticated trading operations. */
 class PolymarketTradingClient {
   private client: ClobClient | null = null;
-  private signer: Wallet | null = null;
+  private relayClient: RelayClient | null = null;
   private heartbeatId: string | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   async init(config: Config): Promise<void> {
-    const provider = new providers.JsonRpcProvider(POLY_URLS.POLYGON_RPC);
-    const wallet = new Wallet(config.polymarket.privateKey, provider);
-    this.signer = wallet;
+    const account = privateKeyToAccount(config.polymarket.privateKey as Hex);
+    const wallet = createWalletClient({
+      account,
+      chain: polygon,
+      transport: http(),
+    });
 
     this.client = new ClobClient(
       POLY_URLS.CLOB_BASE,
       Chain.POLYGON,
-      wallet,
+      wallet as any,
       {
         key: config.polymarket.apiKey,
         secret: config.polymarket.apiSecret,
@@ -45,6 +63,27 @@ class PolymarketTradingClient {
       SignatureType.POLY_PROXY,
       config.polymarket.funderAddress,
     );
+
+    // Initialize relayer client for gasless transactions (redeem, etc.)
+    const { builderApiKey, builderSecret, builderPassphrase } =
+      config.polymarket;
+    if (builderApiKey && builderSecret && builderPassphrase) {
+      const builderConfig = new BuilderConfig({
+        localBuilderCreds: {
+          key: builderApiKey,
+          secret: builderSecret,
+          passphrase: builderPassphrase,
+        },
+      });
+      this.relayClient = new RelayClient(
+        RELAYER_URL,
+        137,
+        wallet,
+        builderConfig,
+        RelayerTxType.PROXY,
+      );
+      logger.info("Relayer client initialized for gasless transactions");
+    }
 
     // Verify connectivity by fetching balance
     const bal = await this.client.getBalanceAllowance({
@@ -188,22 +227,39 @@ class PolymarketTradingClient {
     logger.info("All open orders canceled");
   }
 
-  /** Redeem winning conditional tokens for USDC.e via the CTF contract. */
-  async redeemPositions(conditionId: string): Promise<string> {
-    if (!this.signer) throw new Error("Trading client not initialized");
-    const ctf = new Contract(CTF_ADDRESS, CTF_REDEEM_ABI, this.signer);
-    const tx = await ctf.redeemPositions(
-      USDC_E_ADDRESS,
-      constants.HashZero, // parentCollectionId — always zero for top-level
-      conditionId,
-      [1, 2], // both outcome index sets for binary markets
+  /** Redeem winning conditional tokens for USDC.e via the Polymarket relayer (gasless). */
+  async redeemPositions(conditionId: string): Promise<void> {
+    if (!this.relayClient) {
+      logger.warn(
+        { conditionId },
+        "Skipping auto-redeem — Builder API credentials not configured. Redeem manually at polymarket.com",
+      );
+      return;
+    }
+
+    const redeemTx = {
+      to: CTF_ADDRESS,
+      data: encodeFunctionData({
+        abi: CTF_REDEEM_ABI,
+        functionName: "redeemPositions",
+        args: [
+          USDC_E_ADDRESS,
+          zeroHash, // parentCollectionId — always zero for top-level
+          conditionId as Hex,
+          [1n, 2n], // both outcome index sets for binary markets
+        ],
+      }),
+      value: "0",
+    };
+
+    const response = await this.relayClient.execute(
+      [redeemTx],
+      "Redeem winning positions",
     );
-    const receipt = await tx.wait();
     logger.info(
-      { conditionId, txHash: receipt.transactionHash },
-      "Winning positions redeemed on CTF contract",
+      { conditionId, transactionId: response.transactionID },
+      "Redeem submitted via Polymarket relayer (gasless)",
     );
-    return receipt.transactionHash;
   }
 }
 

@@ -32,6 +32,9 @@ export function loadConfig(): Config {
       apiSecret: env("POLYMARKET_API_SECRET"),
       apiPassphrase: env("POLYMARKET_API_PASSPHRASE"),
       funderAddress: env("POLYMARKET_FUNDER_ADDRESS"),
+      builderApiKey: process.env.POLY_BUILDER_API_KEY || undefined,
+      builderSecret: process.env.POLY_BUILDER_SECRET || undefined,
+      builderPassphrase: process.env.POLY_BUILDER_PASSPHRASE || undefined,
     },
     strategy: {
       marketWindow: env("MARKET_WINDOW", "5M"),

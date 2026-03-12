@@ -70,12 +70,7 @@ export const POLY_URLS = {
   RTDS_WS: "wss://ws-live-data.polymarket.com",
   DATA_API_BASE: "https://data-api.polymarket.com",
   USER_WS: "wss://ws-subscriptions-clob.polymarket.com/ws/user",
-  POLYGON_RPC: "https://polygon-rpc.com",
 } as const;
-
-// CTF (Conditional Tokens Framework) contract addresses on Polygon
-export const CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045";
-export const USDC_E_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
 
 // ============================================
 // Hardcoded operational defaults (not worth env vars)
@@ -127,6 +122,9 @@ export const ConfigSchema = z.object({
     apiSecret: z.string().min(1),
     apiPassphrase: z.string().min(1),
     funderAddress: z.string().min(1),
+    builderApiKey: z.string().optional(),
+    builderSecret: z.string().optional(),
+    builderPassphrase: z.string().optional(),
   }),
   strategy: z.object({
     marketWindow: z.enum(MARKET_WINDOWS),

@@ -1161,7 +1161,7 @@ export class MarketOrchestrator extends EventEmitter {
         exitPrice,
       );
 
-      // Redeem winning tokens from CTF contract
+      // Redeem winning tokens via Polymarket relayer (gasless)
       if (isWin && pos.conditionId) {
         tradingClient
           .redeemPositions(pos.conditionId)
